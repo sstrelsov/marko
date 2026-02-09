@@ -1,0 +1,39 @@
+[package]
+name = "marko"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "marko"
+path = "src/lib.rs"
+
+[[bin]]
+name = "marko"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = { version = "0.29", features = ["crossterm"] }
+crossterm = "0.28"
+tui-textarea = { version = "0.7", features = ["crossterm", "search"] }
+pulldown-cmark = { version = "0.13", default-features = false }
+syntect = { version = "5.2", default-features = false, features = ["default-fancy"] }
+git2 = "0.20"
+clap = { version = "4", features = ["derive"] }
+arboard = "3"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "tiff"] }
+ratatui-image = { version = "9.0", default-features = false, features = ["image-defaults", "crossterm"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSPasteboard"] }
+objc2-foundation = { version = "0.3", features = ["NSData"] }
+resvg = "0.46"
+
+[dev-dependencies]
+tempfile = "3"
+expectrl = "0.7"
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1

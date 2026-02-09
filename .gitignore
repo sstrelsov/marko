@@ -1,0 +1,5 @@
+/target
+.DS_Store
+*.thumb.png
+.marko/images/
+.claude/settings.local.json
