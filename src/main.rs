@@ -11,10 +11,10 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use marko::{app, pandoc};
+use marko::{app, pandoc, upgrade};
 
 #[derive(Parser)]
-#[command(name = "marko", version = "0.1.0", about = "A terminal markdown editor")]
+#[command(name = "marko", version, about = "A terminal markdown editor")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -36,6 +36,8 @@ enum Commands {
         #[arg(long)]
         reference_doc: Option<PathBuf>,
     },
+    /// Update marko to the latest version
+    Upgrade,
 }
 
 fn main() -> io::Result<()> {
@@ -44,13 +46,14 @@ fn main() -> io::Result<()> {
     let cli = Cli::parse();
 
     // Handle subcommands first
-    if let Some(Commands::Export {
-        file,
-        output,
-        reference_doc,
-    }) = cli.command
-    {
-        return handle_export(&file, output.as_deref(), reference_doc.as_deref());
+    match cli.command {
+        Some(Commands::Export {
+            file,
+            output,
+            reference_doc,
+        }) => return handle_export(&file, output.as_deref(), reference_doc.as_deref()),
+        Some(Commands::Upgrade) => return upgrade::run_upgrade(),
+        None => {}
     }
 
     // No subcommand — must have a file argument

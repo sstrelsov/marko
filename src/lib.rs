@@ -5,3 +5,4 @@ pub mod markdown;
 pub mod pandoc;
 #[allow(dead_code)]
 pub mod theme;
+pub mod upgrade;
