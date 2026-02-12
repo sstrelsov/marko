@@ -101,6 +101,12 @@ impl<'a> App<'a> {
         self.viewport_height = chunks[2].height;
         self.content_area = chunks[2];
 
+        // Reflow editor content if terminal width changed
+        let current_text_width = self.available_text_width();
+        if current_text_width > 0 && current_text_width != self.last_wrap_width {
+            self.reflow_content(current_text_width);
+        }
+
         // Header bar: filename (or rename input) + mode tabs
         // When editing a .docx, show the .docx filename instead of the .md sibling
         let filename = if let Some(ref ds) = self.docx_state {

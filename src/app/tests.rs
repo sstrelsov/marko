@@ -401,6 +401,111 @@ fn gutter_marks_empty_for_non_git_file() {
     assert!(app.gutter_marks.is_empty());
 }
 
+// ─── Auto-Wrap Tests ─────────────────────────────────────────
+
+#[test]
+fn navigation_keys_do_not_trigger_wrap() {
+    // Create a line longer than the viewport width
+    let long_line = "a ".repeat(50); // 100 chars
+    let (mut app, _tmp) = app_with_content(&long_line.trim());
+    setup_viewport(&mut app, 40, 20);
+    // Store line content before navigation
+    let line_before = app.textarea.lines()[0].to_string();
+
+    // Press various navigation keys
+    for code in &[
+        KeyCode::Left,
+        KeyCode::Right,
+        KeyCode::Up,
+        KeyCode::Down,
+        KeyCode::Home,
+        KeyCode::End,
+        KeyCode::PageUp,
+        KeyCode::PageDown,
+    ] {
+        app.handle_event(key_event(*code));
+    }
+
+    // Line should be unchanged — navigation must not trigger wrapping
+    assert_eq!(
+        app.textarea.lines()[0], line_before,
+        "Navigation keys should not modify the line"
+    );
+}
+
+#[test]
+fn typing_triggers_wrap() {
+    let (mut app, _tmp) = app_with_content("hello world");
+    setup_viewport(&mut app, 20, 20);
+    // Move to end and type enough to exceed viewport width
+    app.handle_event(key_event(KeyCode::End));
+    for ch in " this is extra text that overflows".chars() {
+        app.handle_event(char_event(ch));
+    }
+    // Should have wrapped into more than one line
+    assert!(
+        app.textarea.lines().len() > 1,
+        "Typing past viewport width should trigger auto-wrap"
+    );
+}
+
+#[test]
+fn first_render_wraps_long_lines() {
+    // Create a temp file with a very long line
+    let long_line = "word ".repeat(40); // 200 chars
+    let mut tmp = NamedTempFile::new().unwrap();
+    tmp.write_all(long_line.trim().as_bytes()).unwrap();
+    tmp.flush().unwrap();
+
+    let mut app = App::new(tmp.path().to_path_buf());
+    // Before first render, content is raw (unwrapped)
+    assert_eq!(app.textarea.lines().len(), 1);
+
+    // Simulate first render: set content_area and trigger reflow
+    setup_viewport(&mut app, 40, 20);
+    let text_width = app.available_text_width();
+    assert!(text_width > 0);
+    // last_wrap_width starts at 0, so reflow is triggered
+    app.reflow_content(text_width);
+
+    // Content should now be wrapped into multiple lines
+    assert!(
+        app.textarea.lines().len() > 1,
+        "Long lines should be hard-wrapped on first render reflow"
+    );
+    // File should not be marked as modified
+    assert!(
+        !app.modified,
+        "Reflowed content should not mark file as modified"
+    );
+}
+
+#[test]
+fn reflow_to_wider_width_unwraps_lines() {
+    // Simulate: content wrapped at narrow width, then terminal expanded
+    let long_line = "word ".repeat(20); // 100 chars
+    let (mut app, _tmp) = app_with_content(long_line.trim());
+    // Wrap at narrow width first
+    setup_viewport(&mut app, 30, 20);
+    let narrow_width = app.available_text_width();
+    app.reflow_content(narrow_width);
+    let narrow_line_count = app.textarea.lines().len();
+    assert!(narrow_line_count > 1, "Should wrap at narrow width");
+
+    // Now expand to wider width
+    setup_viewport(&mut app, 80, 20);
+    let wide_width = app.available_text_width();
+    app.reflow_content(wide_width);
+    let wide_line_count = app.textarea.lines().len();
+    assert!(
+        wide_line_count < narrow_line_count,
+        "Expanding should unwrap lines: {} should be less than {}",
+        wide_line_count,
+        narrow_line_count
+    );
+    assert!(!app.modified, "Reflow should not mark file as modified");
+}
+
 // ─── Docx State Tests ──────────────────────────────────────────
 
 #[test]

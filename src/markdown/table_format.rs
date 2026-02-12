@@ -1,5 +1,6 @@
-/// Hard-wraps long lines to fit within `width`, preserving markdown structure.
-/// Skips code fences and table lines (tables are handled by `format_tables`).
+/// Hard-wraps long lines to fit within `width` (measured in characters).
+/// Skips table lines (tables are handled by `format_tables`).
+/// Code fences, headings, and all other content are wrapped so nothing is truncated.
 pub fn hard_wrap(content: &str, width: usize) -> String {
     if width == 0 {
         return content.to_string();
@@ -9,46 +10,57 @@ pub fn hard_wrap(content: &str, width: usize) -> String {
     let mut in_code_fence = false;
 
     for line in &lines {
-        // Track code fences — never wrap inside them
         let trimmed = line.trim_start();
+
+        // Track code fence state
         if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             in_code_fence = !in_code_fence;
             result.push(line.to_string());
             continue;
         }
-        if in_code_fence {
+
+        // Skip table lines outside code fences (tables are formatted separately)
+        if !in_code_fence {
+            if line.contains('|') && is_separator_row(line) {
+                result.push(line.to_string());
+                continue;
+            }
+            if line.contains('|') && trimmed.starts_with('|') {
+                result.push(line.to_string());
+                continue;
+            }
+        }
+
+        // Line fits — keep as-is (use char count, not byte count)
+        if char_len(line) <= width {
             result.push(line.to_string());
             continue;
         }
 
-        // Skip headings — wrapping breaks the # prefix syntax
-        if trimmed.starts_with('#') {
-            result.push(line.to_string());
-            continue;
-        }
-
-        // Skip table lines (contain | and look like table rows)
-        if line.contains('|') && is_separator_row(line) {
-            result.push(line.to_string());
-            continue;
-        }
-        if line.contains('|') && line.trim_start().starts_with('|') {
-            result.push(line.to_string());
-            continue;
-        }
-
-        // Line fits — keep as-is
-        if line.len() <= width {
-            result.push(line.to_string());
-            continue;
-        }
-
-        // Determine continuation indent from the line's leading structure
-        let indent = continuation_indent(line);
+        // Inside code fences: no continuation indent (plain wrap)
+        // Outside: use markdown-aware continuation indent
+        let indent = if in_code_fence {
+            String::new()
+        } else {
+            continuation_indent(line)
+        };
         wrap_line(line, width, &indent, &mut result);
     }
 
     result.join("\n")
+}
+
+/// Returns the number of characters in a string (not bytes).
+fn char_len(s: &str) -> usize {
+    s.chars().count()
+}
+
+/// Returns the byte offset of the Nth character, or the string length if N >= char count.
+fn byte_offset_at_char(s: &str, n: usize) -> usize {
+    s.char_indices()
+        .nth(n)
+        .map(|(i, _)| i)
+        .unwrap_or(s.len())
 }
 
 /// Figures out what indent continuation lines should use.
@@ -78,26 +90,29 @@ pub fn continuation_indent(line: &str) -> String {
 }
 
 /// Word-wraps a single line, pushing wrapped segments into `out`.
+/// Uses character counts (not byte lengths) for width calculations to handle Unicode.
 fn wrap_line(line: &str, width: usize, continuation: &str, out: &mut Vec<String>) {
     let mut remaining = line;
     let mut is_first = true;
 
     while !remaining.is_empty() {
         let prefix = if is_first { "" } else { continuation };
-        let avail = width.saturating_sub(prefix.len());
+        let prefix_chars = char_len(prefix);
+        let avail = width.saturating_sub(prefix_chars);
         if avail == 0 {
-            // Can't fit even the prefix; just emit what's left
             out.push(format!("{}{}", prefix, remaining));
             break;
         }
 
-        if prefix.len() + remaining.len() <= width {
+        let remaining_chars = char_len(remaining);
+        if prefix_chars + remaining_chars <= width {
             out.push(format!("{}{}", prefix, remaining));
             break;
         }
 
-        // Find the last space within the available width to break at
-        let search_region = &remaining[..avail.min(remaining.len())];
+        // Find the byte offset of the avail-th character for safe slicing
+        let search_end = byte_offset_at_char(remaining, avail);
+        let search_region = &remaining[..search_end];
         let break_at = search_region.rfind(' ');
         match break_at {
             Some(pos) if pos > 0 => {
@@ -105,10 +120,9 @@ fn wrap_line(line: &str, width: usize, continuation: &str, out: &mut Vec<String>
                 remaining = remaining[pos..].trim_start();
             }
             _ => {
-                // No space found — force break at avail
-                let split = avail.min(remaining.len());
-                out.push(format!("{}{}", prefix, &remaining[..split]));
-                remaining = &remaining[split..];
+                // No space found — force break at char boundary
+                out.push(format!("{}{}", prefix, search_region));
+                remaining = &remaining[search_end..];
             }
         }
         is_first = false;
@@ -464,11 +478,21 @@ mod tests {
     }
 
     #[test]
-    fn test_hard_wrap_preserves_code_fences() {
+    fn test_hard_wrap_wraps_code_fence_content() {
         let long_code = "x".repeat(80);
         let input = format!("```\n{}\n```", long_code);
         let result = hard_wrap(&input, 40);
-        assert_eq!(result, input, "Code fences should not be wrapped");
+        // Code fence content should be wrapped so nothing is truncated
+        for line in result.lines() {
+            assert!(
+                line.chars().count() <= 40,
+                "Code fence line should be wrapped: '{}'",
+                line
+            );
+        }
+        // Fence markers should still be present
+        assert!(result.starts_with("```\n"));
+        assert!(result.ends_with("\n```"));
     }
 
     #[test]

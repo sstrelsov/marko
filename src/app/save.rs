@@ -37,7 +37,8 @@ impl<'a> App<'a> {
         let save_content = self.textarea_content();
         match std::fs::write(&self.file_path, &save_content) {
             Ok(_) => {
-                self.original_content = save_content;
+                self.original_content = save_content.clone();
+                self.wrapped_original = save_content;
                 self.modified = false;
 
                 // Round-trip: also export back to .docx if we're in docx mode

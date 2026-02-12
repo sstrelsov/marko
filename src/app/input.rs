@@ -185,10 +185,25 @@ impl<'a> App<'a> {
         // This covers: arrow keys, Enter, Backspace, Delete, Home, End,
         // Ctrl+K (delete to EOL), Ctrl+W/Alt+Backspace (delete word),
         // Ctrl+E (move to EOL), word navigation, etc.
+        let is_navigation = matches!(
+            key.code,
+            KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::Home
+                | KeyCode::End
+                | KeyCode::PageUp
+                | KeyCode::PageDown
+        );
+
         let input = Input::from(key);
         self.textarea.input(input);
-        self.update_modified();
-        self.auto_wrap_line();
+
+        if !is_navigation {
+            self.update_modified();
+            self.auto_wrap_line();
+        }
     }
 
     /// Preview mode key handler: arrow key scrolling only.
@@ -475,22 +490,22 @@ impl<'a> App<'a> {
                 0
             };
             let text_width = (self.content_area.width as usize).saturating_sub(gutter);
-            if text_width == 0 || line.len() <= text_width {
+            let line_chars: usize = line.chars().count();
+            if text_width == 0 || line_chars <= text_width {
                 break;
             }
 
-            // Don't wrap headings, code fences, or table lines
+            // Don't wrap table lines (tables are formatted separately on save)
             let trimmed = line.trim_start();
-            if trimmed.starts_with('#')
-                || trimmed.starts_with("```")
-                || trimmed.starts_with("~~~")
-                || trimmed.starts_with('|')
-            {
+            if trimmed.starts_with('|') {
                 break;
             }
 
-            // Find last space at or before the width limit
-            let search_end = text_width.min(line.len());
+            // Find last space at or before the width limit (using char boundary)
+            let search_end: usize = line.char_indices()
+                .nth(text_width)
+                .map(|(i, _)| i)
+                .unwrap_or(line.len());
             let break_pos = match line[..search_end].rfind(' ') {
                 Some(pos) if pos > 0 => pos,
                 _ => break, // no good break point -- leave as-is
