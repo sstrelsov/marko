@@ -432,6 +432,7 @@ pub(crate) fn load_image(path: &std::path::Path) -> Option<DynamicImage> {
         .unwrap_or("")
         .to_lowercase();
 
+    #[cfg(target_os = "macos")]
     if ext == "svg" || ext == "svgz" {
         return load_svg(path);
     }
@@ -469,6 +470,7 @@ pub(crate) fn load_image_from_bytes(bytes: &[u8]) -> Option<DynamicImage> {
 /// Render SVG to a DynamicImage using resvg (pure Rust, no external tools).
 /// Renders at a higher resolution than the SVG's native size for better quality
 /// when downscaled to terminal cells.
+#[cfg(target_os = "macos")]
 fn load_svg(path: &std::path::Path) -> Option<DynamicImage> {
     let svg_data = std::fs::read(path).ok()?;
     let tree = resvg::usvg::Tree::from_data(&svg_data, &Default::default()).ok()?;
