@@ -15,23 +15,29 @@ A terminal markdown editor.
 - File rename (Ctrl+T)
 - Help overlay (F1)
 
-## Prerequisites (macOS)
-
-Install Rust and Cargo:
-
-```bash
-brew install rust
-```
-
-Verify installation:
-```bash
-cargo --version
-```
-
 ## Install
+
+### Homebrew (macOS)
+
+```bash
+brew install sstrelsov/tap/marko
+```
+
+### Shell installer (macOS / Linux)
+
+```bash
+curl -fsSL https://github.com/sstrelsov/marko/releases/latest/download/marko-installer.sh | sh
+```
+
+### From source
 
 ```bash
 cargo install --path .
+```
+
+## Usage
+
+```bash
 marko <file>
 ```
 
