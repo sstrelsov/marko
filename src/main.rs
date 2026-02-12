@@ -190,9 +190,6 @@ fn run_app(
     file_path: PathBuf,
     docx_state: Option<app::DocxState>,
 ) -> io::Result<()> {
-    // Truncate debug log on startup so it doesn't accumulate across sessions
-    let _ = std::fs::write("/tmp/marko-debug.log", "");
-
     let mut app = app::App::new(file_path);
 
     if let Some(ds) = docx_state {

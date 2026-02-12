@@ -71,17 +71,22 @@ fn app_launches_shows_filename_and_ctrl_q_exits() {
 #[test]
 fn app_type_and_save_persists_to_disk() {
     let (mut session, dir) = spawn_marko("initial");
-    short_delay();
-    // Type some text
-    session.send(b"ADDED").expect("send text");
-    short_delay();
-    // Save with Ctrl+S
-    send_and_wait(&mut session, CTRL_S);
-    // Verify "Saved" appears in status bar
+    // Consume the first frame: wait for filename (header) then "Saved" (status
+    // bar, near the end of the frame). This drains the pty output buffer so the
+    // app finishes its initial render and is definitely in the event-poll loop.
+    session
+        .expect(Regex("test\\.md"))
+        .expect("app should render filename");
     session
         .expect("Saved")
-        .expect("Should see 'Saved' status message");
-    // Quit
+        .expect("first-frame status bar should say Saved");
+    // Now the app is idle and ready for input.
+    // Type some text and immediately save — the event loop drains all queued
+    // events (typing + Ctrl+S) before rendering, so the save sees the new text.
+    session.send(b"ADDED").expect("send text");
+    send_and_wait(&mut session, CTRL_S);
+    // Quit — expect(Eof) in quit() drains remaining pty output, giving the
+    // app time to process any pending events and exit cleanly.
     quit(&mut session);
     // Verify file on disk contains the added text
     let content = std::fs::read_to_string(dir.path().join("test.md")).unwrap();
@@ -130,11 +135,16 @@ fn ctrl_h_deletes_word_backward() {
 #[test]
 fn backspace_0x7f_deletes_one_character() {
     let (mut session, dir) = spawn_marko("abcde");
-    short_delay();
-    // Move to end of line
-    session.send(b"\x1b[F").expect("send End");
-    short_delay();
-    // Backspace (0x7F = DEL, iTerm2 default)
+    // Consume the first frame fully to drain the pty buffer and ensure the
+    // app is idle in its event-poll loop.
+    session
+        .expect(Regex("test\\.md"))
+        .expect("app should render filename");
+    session
+        .expect("Saved")
+        .expect("first-frame status bar should say Saved");
+    // Move to end of line, wait for escape sequence to be parsed, then backspace
+    send_and_wait(&mut session, b"\x1b[F");
     send_and_wait(&mut session, BACKSPACE);
     // Save
     send_and_wait(&mut session, CTRL_S);
@@ -245,20 +255,21 @@ fn f1_shows_help_modal() {
 #[test]
 fn rename_flow_confirm() {
     let (mut session, dir) = spawn_marko("hello");
-    short_delay();
-    // Ctrl+T enters rename mode
+    // Wait for the app to render the first frame. Using expect() for a
+    // deterministic gate, then short_delay() to let remaining pty output
+    // flush (prevents the app from blocking on pty output writes).
+    session
+        .expect(Regex("test\\.md"))
+        .expect("app should render filename");
+    // Ctrl+T enters rename mode (cursor starts at end of "test.md")
     send_and_wait(&mut session, CTRL_T);
-    // Clear existing name: send Home then delete forward repeatedly
-    // Simpler: send Ctrl+A (select all in rename? no, rename doesn't support that)
-    // Actually rename starts with cursor at end of filename "test.md"
-    // We need to clear it. Send Home, then delete forward for each char.
-    session.send(b"\x1b[H").expect("send Home");
-    short_delay();
-    // Delete forward 7 chars ("test.md" = 7 chars)
+    // Clear existing name: backspace 7 times. Single-byte 0x7F can't be
+    // mis-parsed as part of an escape sequence (unlike multi-byte Delete).
     for _ in 0..7 {
-        session.send(b"\x1b[3~").expect("send Delete");
-        std::thread::sleep(Duration::from_millis(20));
+        session.send(BACKSPACE).expect("send Backspace");
+        std::thread::sleep(Duration::from_millis(50));
     }
+    short_delay();
     // Type new name
     session.send(b"renamed.md").expect("send new name");
     short_delay();
