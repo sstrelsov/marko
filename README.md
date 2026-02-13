@@ -1,6 +1,6 @@
 # Marko
 
-A terminal markdown editor written in Rust.
+An open source terminal markdown editor written in Rust.
 
 ![marko-gif](assets/marko-readme.gif)
 
