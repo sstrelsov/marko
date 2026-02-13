@@ -54,34 +54,34 @@ Creates the file if it doesn't exist.
 
 ### Global
 
-| Key        | Action                                            |
-| ---------- | ------------------------------------------------- |
-| Tab        | Switch mode (editor / preview)                    |
-| Ctrl+S     | Save                                              |
-| Ctrl+Q     | Quit                                              |
-| Esc        | Back to editor                                    |
-| Ctrl+T     | Rename file                                       |
-| F1         | Help                                              |
+| Key          | Action                                                     |
+| ------------ | ---------------------------------------------------------- |
+| Tab          | Switch mode (editor / preview)                             |
+| Ctrl+S       | Save                                                       |
+| Ctrl+Q       | Quit                                                       |
+| Esc          | Back to editor                                             |
+| Ctrl+T       | Rename file                                                |
+| F1           | Help                                                       |
 
 ### Editor
 
-| Key                 | Action                                   |
-| ------------------- | ---------------------------------------- |
-| Ctrl+Z / Ctr        | Undo / Redo                              |
-| Ctrl+A              | Select all                               |
-| Ctrl+L              | Go to line start                         |
-| Ctrl+C / Ctr        | Copy / Paste (system clip                |
-| Ctrl+H              | Delete word before cursor                |
-| Ctrl+D              | Delete word after cursor                 |
-| Ctrl+K              | Delete to end of line                    |
+| Key                     | Action                                          |
+| ----------------------- | ----------------------------------------------- |
+| Ctrl+Z / Ctr            | Undo / Redo                                     |
+| Ctrl+A                  | Select all                                      |
+| Ctrl+L                  | Go to line start                                |
+| Ctrl+C / Ctr            | Copy / Paste (system clip                       |
+| Ctrl+H                  | Delete word before cursor                       |
+| Ctrl+D                  | Delete word after cursor                        |
+| Ctrl+K                  | Delete to end of line                           |
 
 ### Mouse
 
-| Action                            | Effect                     |
-| --------------------------------- | -------------------------- |
-| Click + drag                      | Select text                |
-| Click filename                    | Rename file                |
-| Click tabs                        | Switch mode                |
+| Action                                  | Effect                          |
+| --------------------------------------- | ------------------------------- |
+| Click + drag                            | Select text                     |
+| Click filename                          | Rename file                     |
+| Click tabs                              | Switch mode                     |
 
 ## Development
 

@@ -230,30 +230,41 @@ impl<'a> App<'a> {
     /// drag (text selection), and release.
     pub(super) fn handle_mouse(&mut self, mouse: MouseEvent) {
         match mouse.kind {
-            // Scroll wheel: delegate to tui-textarea in editor, manual in preview
+            // Scroll wheel: when mid-drag, extend selection via CursorMove so the
+            // highlight follows the scroll. Otherwise delegate to tui-textarea.
             MouseEventKind::ScrollUp => match self.mode {
                 Mode::Editor => {
-                    self.textarea.input(Input {
-                        key: Key::MouseScrollUp,
-                        ctrl: false,
-                        alt: false,
-                        shift: false,
-                    });
-                    self.editor_scroll_top = self.editor_scroll_top.saturating_sub(1);
+                    if self.mouse_dragging {
+                        self.textarea.move_cursor(CursorMove::Up);
+                    } else if self.editor_scroll_top > 0 {
+                        self.textarea.input(Input {
+                            key: Key::MouseScrollUp,
+                            ctrl: false,
+                            alt: false,
+                            shift: false,
+                        });
+                        self.editor_scroll_top = self.editor_scroll_top.saturating_sub(1);
+                    }
                 }
                 Mode::Preview => self.preview.scroll_up(SCROLL_LINES),
             },
             MouseEventKind::ScrollDown => match self.mode {
                 Mode::Editor => {
-                    self.textarea.input(Input {
-                        key: Key::MouseScrollDown,
-                        ctrl: false,
-                        alt: false,
-                        shift: false,
-                    });
-                    let total_lines = self.textarea.lines().len() as u16;
-                    let max_scroll = total_lines.saturating_sub(1);
-                    self.editor_scroll_top = (self.editor_scroll_top + 1).min(max_scroll);
+                    if self.mouse_dragging {
+                        self.textarea.move_cursor(CursorMove::Down);
+                    } else {
+                        let total_lines = self.textarea.lines().len() as u16;
+                        let max_scroll = total_lines.saturating_sub(self.viewport_height);
+                        if self.editor_scroll_top < max_scroll {
+                            self.textarea.input(Input {
+                                key: Key::MouseScrollDown,
+                                ctrl: false,
+                                alt: false,
+                                shift: false,
+                            });
+                            self.editor_scroll_top = (self.editor_scroll_top + 1).min(max_scroll);
+                        }
+                    }
                 }
                 Mode::Preview => self.preview.scroll_down(SCROLL_LINES, self.viewport_height),
             },
@@ -347,16 +358,28 @@ impl<'a> App<'a> {
                 }
             }
 
-            // Left drag: extend selection to current mouse position
+            // Left drag: extend selection to current mouse position.
+            // When the mouse is at or beyond a viewport edge (including outside the
+            // terminal window), set drag_auto_scroll so tick() keeps scrolling via
+            // CursorMove::Up/Down — the terminal stops sending events once coords
+            // are clamped to the boundary, so a timer is needed for continuous scroll.
             MouseEventKind::Drag(MouseButton::Left) => {
                 if self.mode == Mode::Editor && self.mouse_dragging {
                     let area = self.content_area;
-                    if mouse.column >= area.x
-                        && mouse.column < area.x + area.width
-                        && mouse.row >= area.y
-                        && mouse.row < area.y + area.height
-                    {
-                        let (buffer_row, buffer_col) = self.mouse_to_buffer_pos(mouse.column, mouse.row);
+
+                    if mouse.row < area.y {
+                        // At or above viewport top — initial jump + enable timer
+                        self.drag_auto_scroll = Some(DragAutoScroll::Up);
+                        self.textarea.move_cursor(CursorMove::Up);
+                    } else if mouse.row >= area.y + area.height {
+                        // At or below viewport bottom — initial jump + enable timer
+                        self.drag_auto_scroll = Some(DragAutoScroll::Down);
+                        self.textarea.move_cursor(CursorMove::Down);
+                    } else {
+                        // Within viewport: cancel any auto-scroll and move cursor to mouse position
+                        self.drag_auto_scroll = None;
+                        let clamped_col = mouse.column.max(area.x).min(area.x + area.width - 1);
+                        let (buffer_row, buffer_col) = self.mouse_to_buffer_pos(clamped_col, mouse.row);
                         self.textarea
                             .move_cursor(CursorMove::Jump(buffer_row, buffer_col));
                     }
@@ -367,6 +390,7 @@ impl<'a> App<'a> {
             MouseEventKind::Up(MouseButton::Left) => {
                 if self.mouse_dragging {
                     self.mouse_dragging = false;
+                    self.drag_auto_scroll = None;
                     if let Some(((sr, sc), (er, ec))) = self.textarea.selection_range() {
                         if sr == er && sc == ec {
                             self.textarea.cancel_selection();
@@ -391,9 +415,10 @@ impl<'a> App<'a> {
         } else {
             0
         };
-        let relative_row = row - area.y;
-        let buffer_row = relative_row + self.editor_scroll_top;
-        let relative_col = column - area.x;
+        let relative_row = row.saturating_sub(area.y);
+        let buffer_row = (relative_row + self.editor_scroll_top)
+            .min(total_lines.saturating_sub(1) as u16);
+        let relative_col = column.saturating_sub(area.x);
         let buffer_col = relative_col.saturating_sub(gutter_width);
         (buffer_row, buffer_col)
     }

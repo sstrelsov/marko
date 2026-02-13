@@ -554,14 +554,40 @@ fn mouse_scroll_up_clamps_at_zero() {
 
 #[test]
 fn mouse_scroll_down_clamps_at_max() {
-    // 5-line doc in 20-row viewport: max_scroll = 4 (total_lines - 1)
+    // 5-line doc in 20-row viewport: content fits entirely, max_scroll = 0
     let content = "a\nb\nc\nd\ne";
     let (mut app, _tmp) = app_with_content(content);
     setup_viewport(&mut app, 80, 20);
     for _ in 0..20 {
         app.handle_event(mouse_event(MouseEventKind::ScrollDown, 40, 10));
     }
-    assert!(app.editor_scroll_top <= 4, "scroll should clamp at max (got {})", app.editor_scroll_top);
+    assert_eq!(app.editor_scroll_top, 0, "content fits viewport, scroll should stay at 0");
+}
+
+#[test]
+fn mouse_scroll_down_clamps_tall_content() {
+    // 50-line doc in 20-row viewport: max_scroll = 50 - 20 = 30
+    let content = (0..50).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+    let (mut app, _tmp) = app_with_content(&content);
+    setup_viewport(&mut app, 80, 20);
+    for _ in 0..60 {
+        app.handle_event(mouse_event(MouseEventKind::ScrollDown, 40, 10));
+    }
+    assert_eq!(app.editor_scroll_top, 30, "scroll should clamp at total_lines - viewport_height");
+}
+
+#[test]
+fn mouse_scroll_up_not_forwarded_at_zero() {
+    // When already at top, scrolling up should not change anything
+    let content = (0..50).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+    let (mut app, _tmp) = app_with_content(&content);
+    setup_viewport(&mut app, 80, 20);
+    assert_eq!(app.editor_scroll_top, 0);
+    // Scroll up multiple times at top
+    for _ in 0..5 {
+        app.handle_event(mouse_event(MouseEventKind::ScrollUp, 40, 10));
+    }
+    assert_eq!(app.editor_scroll_top, 0);
 }
 
 #[test]
@@ -578,4 +604,165 @@ fn click_after_scroll_maps_to_correct_buffer_row() {
     let (buffer_row, _) = app.mouse_to_buffer_pos(10, 2);
     // row 2 - content_area.y(1) = relative_row 1, + scroll 10 = buffer_row 11
     assert_eq!(buffer_row, 11);
+}
+
+#[test]
+fn click_in_tilde_area_clamps_to_last_line() {
+    // 5-line doc in 20-row viewport: clicking row 15 (in tilde area) should
+    // clamp to last buffer line (4)
+    let content = "a\nb\nc\nd\ne";
+    let (mut app, _tmp) = app_with_content(content);
+    setup_viewport(&mut app, 80, 20);
+    // Row 16 = content_area.y(1) + 15, which is well past the 5 lines
+    let (buffer_row, _) = app.mouse_to_buffer_pos(10, 16);
+    assert_eq!(buffer_row, 4, "click in tilde area should clamp to last line");
+}
+
+// ─── Drag Auto-Scroll Tests ────────────────────────────────────────
+
+#[test]
+fn drag_below_viewport_sets_auto_scroll_down() {
+    let content = (0..50).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+    let (mut app, _tmp) = app_with_content(&content);
+    setup_viewport(&mut app, 80, 20);
+    // Start drag in editor (content_area.y=1)
+    app.handle_event(mouse_event(
+        MouseEventKind::Down(MouseButton::Left),
+        10, 5,
+    ));
+    assert!(app.mouse_dragging);
+    let cursor_before = app.textarea.cursor().0;
+    // Drag below viewport (row 21 is past content_area.y(1) + height(20))
+    app.handle_event(mouse_event(
+        MouseEventKind::Drag(MouseButton::Left),
+        10, 21,
+    ));
+    assert_eq!(app.drag_auto_scroll, Some(DragAutoScroll::Down));
+    assert!(app.textarea.cursor().0 > cursor_before, "cursor should move down");
+}
+
+#[test]
+fn drag_above_viewport_sets_auto_scroll_up() {
+    let content = (0..50).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+    let (mut app, _tmp) = app_with_content(&content);
+    setup_viewport(&mut app, 80, 20);
+    // Move cursor down so we have room to scroll up
+    app.textarea.move_cursor(CursorMove::Jump(10, 0));
+    // Start drag
+    app.handle_event(mouse_event(
+        MouseEventKind::Down(MouseButton::Left),
+        10, 10,
+    ));
+    assert!(app.mouse_dragging);
+    let cursor_before = app.textarea.cursor().0;
+    // Drag above viewport (row 0 is above content_area.y=1)
+    app.handle_event(mouse_event(
+        MouseEventKind::Drag(MouseButton::Left),
+        10, 0,
+    ));
+    assert_eq!(app.drag_auto_scroll, Some(DragAutoScroll::Up));
+    assert!(app.textarea.cursor().0 < cursor_before, "cursor should move up");
+}
+
+#[test]
+fn drag_within_viewport_clears_auto_scroll() {
+    let content = (0..50).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+    let (mut app, _tmp) = app_with_content(&content);
+    setup_viewport(&mut app, 80, 20);
+    // Start drag, go below, then come back
+    app.handle_event(mouse_event(
+        MouseEventKind::Down(MouseButton::Left),
+        10, 5,
+    ));
+    app.handle_event(mouse_event(
+        MouseEventKind::Drag(MouseButton::Left),
+        10, 21,
+    ));
+    assert_eq!(app.drag_auto_scroll, Some(DragAutoScroll::Down));
+    // Move back within viewport
+    app.handle_event(mouse_event(
+        MouseEventKind::Drag(MouseButton::Left),
+        10, 10,
+    ));
+    assert_eq!(app.drag_auto_scroll, None, "returning to viewport should clear auto-scroll");
+}
+
+#[test]
+fn tick_continues_auto_scroll_down() {
+    let content = (0..50).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+    let (mut app, _tmp) = app_with_content(&content);
+    setup_viewport(&mut app, 80, 20);
+    // Start drag and move below viewport
+    app.handle_event(mouse_event(
+        MouseEventKind::Down(MouseButton::Left),
+        10, 5,
+    ));
+    app.handle_event(mouse_event(
+        MouseEventKind::Drag(MouseButton::Left),
+        10, 21,
+    ));
+    let cursor_after_drag = app.textarea.cursor().0;
+    // tick() should continue moving cursor down (simulating terminal no longer sending events)
+    app.tick();
+    assert!(app.textarea.cursor().0 > cursor_after_drag, "tick should keep scrolling down");
+}
+
+#[test]
+fn mouse_release_clears_auto_scroll() {
+    let content = (0..50).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+    let (mut app, _tmp) = app_with_content(&content);
+    setup_viewport(&mut app, 80, 20);
+    app.handle_event(mouse_event(
+        MouseEventKind::Down(MouseButton::Left),
+        10, 5,
+    ));
+    app.handle_event(mouse_event(
+        MouseEventKind::Drag(MouseButton::Left),
+        10, 21,
+    ));
+    assert!(app.drag_auto_scroll.is_some());
+    app.handle_event(mouse_event(
+        MouseEventKind::Up(MouseButton::Left),
+        10, 21,
+    ));
+    assert!(!app.mouse_dragging);
+    assert_eq!(app.drag_auto_scroll, None, "release should clear auto-scroll");
+}
+
+#[test]
+fn scroll_during_drag_extends_selection_down() {
+    let content = (0..50).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+    let (mut app, _tmp) = app_with_content(&content);
+    setup_viewport(&mut app, 80, 20);
+    // Start drag selection
+    app.handle_event(mouse_event(
+        MouseEventKind::Down(MouseButton::Left),
+        10, 5,
+    ));
+    assert!(app.mouse_dragging);
+    let cursor_before = app.textarea.cursor().0;
+    // Scroll down while dragging — should extend selection, not just scroll viewport
+    app.handle_event(mouse_event(MouseEventKind::ScrollDown, 40, 10));
+    assert!(app.textarea.cursor().0 > cursor_before, "scroll during drag should move cursor down");
+    assert!(app.textarea.selection_range().is_some(), "selection should still be active");
+}
+
+#[test]
+fn scroll_during_drag_extends_selection_up() {
+    let content = (0..50).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+    let (mut app, _tmp) = app_with_content(&content);
+    setup_viewport(&mut app, 80, 20);
+    // Move cursor down first so there's room to scroll up
+    app.textarea.move_cursor(CursorMove::Jump(10, 5));
+    // Start drag selection
+    app.handle_event(mouse_event(
+        MouseEventKind::Down(MouseButton::Left),
+        10, 11, // row 11 = content_area.y(1) + cursor_row(10)
+    ));
+    assert!(app.mouse_dragging);
+    let cursor_before = app.textarea.cursor().0;
+    // Scroll up while dragging
+    app.handle_event(mouse_event(MouseEventKind::ScrollUp, 40, 10));
+    assert!(app.textarea.cursor().0 < cursor_before, "scroll during drag should move cursor up");
+    assert!(app.textarea.selection_range().is_some(), "selection should still be active");
 }

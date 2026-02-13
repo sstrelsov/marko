@@ -59,6 +59,13 @@ pub enum Mode {
     Preview,
 }
 
+/// Direction for timer-based drag auto-scroll at viewport edges.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum DragAutoScroll {
+    Up,
+    Down,
+}
+
 pub struct App<'a> {
     // --- Core state ---
     pub mode: Mode,
@@ -105,6 +112,9 @@ pub struct App<'a> {
     editor_scroll_top: u16,
     /// True while left mouse button is held down for drag selection.
     mouse_dragging: bool,
+    /// When set, tick() auto-scrolls the viewport in this direction and extends
+    /// the selection — triggered when dragging at or beyond viewport edges.
+    drag_auto_scroll: Option<DragAutoScroll>,
     /// Timestamp of last left-click in content area, for double/triple-click detection.
     last_click_time: Option<Instant>,
     /// Terminal position of last click, for multi-click detection.
@@ -207,6 +217,7 @@ impl<'a> App<'a> {
             content_area: Rect::default(),
             editor_scroll_top: 0,
             mouse_dragging: false,
+            drag_auto_scroll: None,
             last_click_time: None,
             last_click_pos: (0, 0),
             click_count: 0,
@@ -236,6 +247,21 @@ impl<'a> App<'a> {
                 if let Some(handle) = self.gutter_handle.take() {
                     if let Ok(marks) = handle.join() {
                         self.gutter_marks = marks;
+                    }
+                }
+            }
+        }
+
+        // Timer-based drag auto-scroll: when the mouse is held at or beyond
+        // the viewport edge, keep scrolling and extending the selection each tick.
+        if self.mouse_dragging {
+            if let Some(direction) = self.drag_auto_scroll {
+                match direction {
+                    DragAutoScroll::Up => {
+                        self.textarea.move_cursor(CursorMove::Up);
+                    }
+                    DragAutoScroll::Down => {
+                        self.textarea.move_cursor(CursorMove::Down);
                     }
                 }
             }

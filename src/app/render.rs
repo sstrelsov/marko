@@ -297,8 +297,9 @@ impl<'a> App<'a> {
         // Render vim-style tilde markers for lines beyond the file content
         let total_lines = self.textarea.lines().len();
         let gutter_width = format!("{}", total_lines).len() as u16 + 1;
-        if (total_lines as u16) < area.height {
-            for row in total_lines as u16..area.height {
+        let visible_content_lines = (total_lines as u16).saturating_sub(self.editor_scroll_top);
+        if visible_content_lines < area.height {
+            for row in visible_content_lines..area.height {
                 let tilde_area = Rect {
                     x: area.x,
                     y: area.y + row,
