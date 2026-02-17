@@ -28,6 +28,9 @@ impl<'a> App<'a> {
     /// Main key handler. Processes modal states first, then Esc-as-back,
     /// then global keybindings, then delegates to mode-specific handlers.
     pub(super) fn handle_key(&mut self, key: KeyEvent) {
+        // Any keystroke clears scroll-preserved state and restores cursor
+        self.clear_scroll_state();
+
         // Help modal: any key dismisses it (swallows the keypress)
         if self.show_help {
             self.show_help = false;
@@ -236,14 +239,8 @@ impl<'a> App<'a> {
                 Mode::Editor => {
                     if self.mouse_dragging {
                         self.textarea.move_cursor(CursorMove::Up);
-                    } else if self.editor_scroll_top > 0 {
-                        self.textarea.input(Input {
-                            key: Key::MouseScrollUp,
-                            ctrl: false,
-                            alt: false,
-                            shift: false,
-                        });
-                        self.editor_scroll_top = self.editor_scroll_top.saturating_sub(1);
+                    } else {
+                        self.editor_scroll(true);
                     }
                 }
                 Mode::Preview => self.preview.scroll_up(SCROLL_LINES),
@@ -253,17 +250,7 @@ impl<'a> App<'a> {
                     if self.mouse_dragging {
                         self.textarea.move_cursor(CursorMove::Down);
                     } else {
-                        let total_lines = self.textarea.lines().len() as u16;
-                        let max_scroll = total_lines.saturating_sub(self.viewport_height);
-                        if self.editor_scroll_top < max_scroll {
-                            self.textarea.input(Input {
-                                key: Key::MouseScrollDown,
-                                ctrl: false,
-                                alt: false,
-                                shift: false,
-                            });
-                            self.editor_scroll_top = (self.editor_scroll_top + 1).min(max_scroll);
-                        }
+                        self.editor_scroll(false);
                     }
                 }
                 Mode::Preview => self.preview.scroll_down(SCROLL_LINES, self.viewport_height),
@@ -271,6 +258,8 @@ impl<'a> App<'a> {
 
             // Left click: header tabs/filename or editor cursor positioning + drag start
             MouseEventKind::Down(MouseButton::Left) => {
+                // Any click clears scroll-preserved state and restores cursor
+                self.clear_scroll_state();
                 let area = self.content_area;
 
                 // Ignore clicks outside the capped area's x-range
@@ -421,6 +410,156 @@ impl<'a> App<'a> {
         let relative_col = column.saturating_sub(area.x);
         let buffer_col = relative_col.saturating_sub(gutter_width);
         (buffer_row, buffer_col)
+    }
+
+    // ─── Scroll helpers ──────────────────────────────────────────────────
+
+    /// Clears scroll-preserved state and restores cursor visibility.
+    /// Called on click or keystroke — any direct user interaction that ends
+    /// the "just scrolling" session.
+    fn clear_scroll_state(&mut self) {
+        if self.scroll_cursor.is_some() {
+            // Restore normal cursor style
+            self.textarea.set_cursor_style(
+                Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+            );
+        }
+        self.scroll_cursor = None;
+        self.scroll_anchor = None;
+    }
+
+    /// Scrolls the editor viewport by one line without moving the cursor.
+    ///
+    /// tui-textarea's `scroll()` always clamps the cursor into the viewport
+    /// and its `render()` always snaps the viewport to show the cursor,
+    /// making it impossible to scroll the cursor off-screen through normal
+    /// APIs.
+    ///
+    /// We work around this by:
+    ///   1. Tracking the **true** cursor / selection-anchor in
+    ///      `scroll_cursor` / `scroll_anchor` across scroll events.
+    ///   2. After each scroll, if the true cursor is still visible we
+    ///      restore it; otherwise we park a **hidden** dummy cursor at the
+    ///      viewport edge so `render()` won't snap the viewport back.
+    ///   3. Selection highlight is re-established each scroll from the true
+    ///      endpoints, clamped to the viewport.
+    fn editor_scroll(&mut self, up: bool) -> bool {
+        // Bounds check
+        if up {
+            if self.editor_scroll_top == 0 {
+                return false;
+            }
+        } else {
+            let total_lines = self.textarea.lines().len() as u16;
+            let max_scroll = total_lines.saturating_sub(self.viewport_height);
+            if self.editor_scroll_top >= max_scroll {
+                return false;
+            }
+        }
+
+        // ── 1. Determine the TRUE cursor and anchor ──────────────────
+        // On the first scroll, read from tui-textarea.  On subsequent
+        // scrolls the real positions live in our saved fields because
+        // tui-textarea's own cursor/selection have been overwritten.
+        let true_cursor = self.scroll_cursor.unwrap_or_else(|| self.textarea.cursor());
+
+        let true_anchor: Option<(usize, usize)> = self.scroll_anchor.or_else(|| {
+            self.textarea.selection_range().map(|range| {
+                if true_cursor == range.0 {
+                    range.1
+                } else {
+                    range.0
+                }
+            })
+        });
+
+        // ── 2. Cancel selection, scroll, update tracking ─────────────
+        self.textarea.cancel_selection();
+
+        let delta: i16 = if up { -1 } else { 1 };
+        self.textarea.scroll((delta, 0i16));
+
+        if up {
+            self.editor_scroll_top = self.editor_scroll_top.saturating_sub(1);
+        } else {
+            let total_lines = self.textarea.lines().len() as u16;
+            let max_scroll = total_lines.saturating_sub(self.viewport_height);
+            self.editor_scroll_top = (self.editor_scroll_top + 1).min(max_scroll);
+        }
+
+        let vp_top = self.editor_scroll_top as usize;
+        let vp_bottom =
+            (self.editor_scroll_top + self.viewport_height).saturating_sub(1) as usize;
+
+        let cursor_in_vp = true_cursor.0 >= vp_top && true_cursor.0 <= vp_bottom;
+
+        // ── 3. Restore cursor + selection ────────────────────────────
+        if cursor_in_vp {
+            // True cursor is visible — put it back exactly where it was.
+            self.textarea.move_cursor(CursorMove::Jump(
+                true_cursor.0 as u16,
+                true_cursor.1 as u16,
+            ));
+
+            // Restore selection if any
+            if let Some(anchor) = true_anchor {
+                // Place cursor at anchor first, start selection, jump back
+                self.textarea
+                    .move_cursor(CursorMove::Jump(anchor.0 as u16, anchor.1 as u16));
+                self.textarea.start_selection();
+                self.textarea.move_cursor(CursorMove::Jump(
+                    true_cursor.0 as u16,
+                    true_cursor.1 as u16,
+                ));
+            }
+
+            // Cursor is on-screen — make sure it's visible
+            if self.scroll_cursor.is_some() {
+                self.textarea.set_cursor_style(
+                    Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+                );
+            }
+            self.scroll_cursor = None;
+            self.scroll_anchor = None;
+        } else {
+            // True cursor is off-screen — save it, park a dummy cursor
+            // at the viewport edge, and hide the cursor style.
+            self.scroll_cursor = Some(true_cursor);
+            if true_anchor.is_some() {
+                self.scroll_anchor = true_anchor;
+            }
+
+            // Hide cursor so the dummy position isn't visible
+            self.textarea.set_cursor_style(Style::default());
+
+            // Re-establish selection for the visible portion (if any)
+            if let Some(anchor) = true_anchor {
+                let sel_top = anchor.0.min(true_cursor.0);
+                let sel_bottom = anchor.0.max(true_cursor.0);
+
+                if sel_top <= vp_bottom && sel_bottom >= vp_top {
+                    // Clamp both endpoints to viewport, but not beyond the
+                    // true selection range
+                    let vis_start = anchor.0.clamp(vp_top, vp_bottom).clamp(sel_top, sel_bottom);
+                    let vis_end = true_cursor
+                        .0
+                        .clamp(vp_top, vp_bottom)
+                        .clamp(sel_top, sel_bottom);
+
+                    self.textarea
+                        .move_cursor(CursorMove::Jump(vis_start as u16, anchor.1 as u16));
+                    self.textarea.start_selection();
+                    self.textarea.move_cursor(CursorMove::Jump(
+                        vis_end as u16,
+                        true_cursor.1 as u16,
+                    ));
+                }
+                // No overlap → no visible selection, cursor stays wherever scroll() put it
+            }
+            // No selection → cursor stays wherever scroll() put it (hidden)
+        }
+
+        true
     }
 
     // ─── Internal helpers ────────────────────────────────────────────────

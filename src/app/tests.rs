@@ -529,6 +529,53 @@ fn mouse_scroll_down_updates_editor_scroll_top() {
 }
 
 #[test]
+fn scroll_does_not_move_cursor() {
+    // Place cursor at row 10, scroll down 5 times — cursor should stay at row 10.
+    let content = (0..50).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+    let (mut app, _tmp) = app_with_content(&content);
+    setup_viewport(&mut app, 80, 20);
+    app.textarea.move_cursor(CursorMove::Jump(10, 5));
+    assert_eq!(app.textarea.cursor(), (10, 5));
+    for _ in 0..5 {
+        app.handle_event(mouse_event(MouseEventKind::ScrollDown, 40, 10));
+    }
+    assert_eq!(app.editor_scroll_top, 5);
+    assert_eq!(app.textarea.cursor(), (10, 5), "cursor should not move on scroll");
+    // Also scroll up — cursor should stay put
+    for _ in 0..3 {
+        app.handle_event(mouse_event(MouseEventKind::ScrollUp, 40, 10));
+    }
+    assert_eq!(app.editor_scroll_top, 2);
+    assert_eq!(app.textarea.cursor(), (10, 5), "cursor should not move on scroll up");
+}
+
+#[test]
+fn scroll_cursor_off_screen_saves_true_position() {
+    // Cursor at row 5, scroll down 20 — cursor goes off-screen.
+    // scroll_cursor should store the true position.
+    // Scroll back — cursor should be restored.
+    let content = (0..50).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+    let (mut app, _tmp) = app_with_content(&content);
+    setup_viewport(&mut app, 80, 20);
+    app.textarea.move_cursor(CursorMove::Jump(5, 3));
+    assert_eq!(app.textarea.cursor(), (5, 3));
+    // Scroll down 20 — viewport [20, 39], cursor at row 5 is off-screen
+    for _ in 0..20 {
+        app.handle_event(mouse_event(MouseEventKind::ScrollDown, 40, 10));
+    }
+    assert_eq!(app.editor_scroll_top, 20);
+    assert!(app.scroll_cursor.is_some(), "true cursor should be saved");
+    assert_eq!(app.scroll_cursor.unwrap(), (5, 3));
+    // Scroll back up 20
+    for _ in 0..20 {
+        app.handle_event(mouse_event(MouseEventKind::ScrollUp, 40, 10));
+    }
+    assert_eq!(app.editor_scroll_top, 0);
+    assert!(app.scroll_cursor.is_none(), "scroll_cursor cleared when cursor is back in viewport");
+    assert_eq!(app.textarea.cursor(), (5, 3), "cursor restored to original position");
+}
+
+#[test]
 fn mouse_scroll_up_updates_editor_scroll_top() {
     // Scroll down 10, then up 3, verify offset = 7
     let content = (0..50).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
@@ -745,6 +792,80 @@ fn scroll_during_drag_extends_selection_down() {
     app.handle_event(mouse_event(MouseEventKind::ScrollDown, 40, 10));
     assert!(app.textarea.cursor().0 > cursor_before, "scroll during drag should move cursor down");
     assert!(app.textarea.selection_range().is_some(), "selection should still be active");
+}
+
+#[test]
+fn scroll_after_drag_preserves_selection() {
+    let content = (0..50).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+    let (mut app, _tmp) = app_with_content(&content);
+    setup_viewport(&mut app, 80, 20);
+    // Drag-select: press down, drag to different row, release
+    app.handle_event(mouse_event(
+        MouseEventKind::Down(MouseButton::Left),
+        5, 3,
+    ));
+    app.handle_event(mouse_event(
+        MouseEventKind::Drag(MouseButton::Left),
+        20, 6,
+    ));
+    app.handle_event(mouse_event(
+        MouseEventKind::Up(MouseButton::Left),
+        20, 6,
+    ));
+    assert!(!app.mouse_dragging);
+    let range_before = app.textarea.selection_range();
+    assert!(range_before.is_some(), "selection should exist after drag-release");
+    // Now scroll — selection must survive
+    app.handle_event(mouse_event(MouseEventKind::ScrollDown, 40, 10));
+    assert!(
+        app.textarea.selection_range().is_some(),
+        "selection should persist after scroll"
+    );
+}
+
+#[test]
+fn scroll_far_and_back_restores_selection() {
+    // Select rows 2-5 in a 50-line doc with 20-line viewport, scroll far
+    // past the selection, then scroll back — the full selection should reappear.
+    let content = (0..50).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+    let (mut app, _tmp) = app_with_content(&content);
+    setup_viewport(&mut app, 80, 20);
+
+    // Click row 3 (content_area.y=1, so buffer_row = 3-1+scroll(0) = 2)
+    app.handle_event(mouse_event(
+        MouseEventKind::Down(MouseButton::Left),
+        5, 3,
+    ));
+    // Drag to row 6 (buffer_row = 5)
+    app.handle_event(mouse_event(
+        MouseEventKind::Drag(MouseButton::Left),
+        20, 6,
+    ));
+    app.handle_event(mouse_event(
+        MouseEventKind::Up(MouseButton::Left),
+        20, 6,
+    ));
+    let original_range = app.textarea.selection_range();
+    assert!(original_range.is_some(), "selection should exist after drag");
+
+    // Scroll down 25 times — cursor will be forced off the selection
+    for _ in 0..25 {
+        app.handle_event(mouse_event(MouseEventKind::ScrollDown, 40, 10));
+    }
+    // Selection may or may not be visible, but preserved_sel should be set
+    assert!(app.scroll_cursor.is_some(), "scroll_cursor should be saved");
+
+    // Now scroll back up 25 times to restore original viewport
+    for _ in 0..25 {
+        app.handle_event(mouse_event(MouseEventKind::ScrollUp, 40, 10));
+    }
+    // The selection should be restored to its original range
+    let restored_range = app.textarea.selection_range();
+    assert!(restored_range.is_some(), "selection should be restored after scrolling back");
+    assert_eq!(
+        original_range, restored_range,
+        "selection range should match original after scroll round-trip"
+    );
 }
 
 #[test]

@@ -14,7 +14,7 @@ use ratatui::{
     Frame,
 };
 
-use tui_textarea::{CursorMove, Input, Key, TextArea};
+use tui_textarea::{CursorMove, Input, TextArea};
 
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
@@ -121,6 +121,14 @@ pub struct App<'a> {
     last_click_pos: (u16, u16),
     /// Click count (1=single, 2=double, 3=triple), resets on timeout or position change.
     click_count: u8,
+    /// True cursor position saved when wheel-scrolling moves it off-screen.
+    /// While set, tui-textarea's cursor sits at a dummy viewport-edge position
+    /// and its visual style is hidden.  Cleared on click or keystroke.
+    scroll_cursor: Option<(usize, usize)>,
+    /// Selection anchor saved when wheel-scrolling with an active selection.
+    /// Paired with `scroll_cursor` to reconstruct the full selection.
+    /// Cleared on click or keystroke.
+    scroll_anchor: Option<(usize, usize)>,
 
     // --- Wrap/reflow tracking ---
     /// Text width used for the last hard_wrap, so we can detect resize and reflow.
@@ -221,6 +229,8 @@ impl<'a> App<'a> {
             last_click_time: None,
             last_click_pos: (0, 0),
             click_count: 0,
+            scroll_cursor: None,
+            scroll_anchor: None,
             last_wrap_width: 0,
             gutter_handle,
             code_fence_regions,
