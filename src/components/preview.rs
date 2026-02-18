@@ -140,7 +140,20 @@ impl PreviewState {
 pub fn render(frame: &mut Frame, area: Rect, content: &str, state: &mut PreviewState, base_dir: &Path) {
     let rendered = markdown::renderer::render_markdown(content, area.width.saturating_sub(2) as usize);
 
-    state.content_height = rendered.text.lines.len() as u16;
+    // Trim trailing empty lines from content height so the scrollbar
+    // doesn't imply more content exists beyond the actual text.
+    let mut content_height = rendered.text.lines.len();
+    while content_height > 0 {
+        let last = &rendered.text.lines[content_height - 1];
+        let is_empty = last.spans.is_empty()
+            || last.spans.iter().all(|s| s.content.trim().is_empty());
+        if is_empty {
+            content_height -= 1;
+        } else {
+            break;
+        }
+    }
+    state.content_height = content_height as u16;
 
     if state.last_area.width != area.width || state.last_area.height != area.height {
         state.protocol_cache.clear();

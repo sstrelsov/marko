@@ -14,7 +14,7 @@ use ratatui::{
     Frame,
 };
 
-use tui_textarea::{CursorMove, Input, Key, TextArea};
+use tui_textarea::{CursorMove, Input, TextArea};
 
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
@@ -57,6 +57,13 @@ const MAX_WIDTH: u16 = 120;
 pub enum Mode {
     Editor,
     Preview,
+}
+
+/// Direction for timer-based drag auto-scroll at viewport edges.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum DragAutoScroll {
+    Up,
+    Down,
 }
 
 pub struct App<'a> {
@@ -105,12 +112,23 @@ pub struct App<'a> {
     editor_scroll_top: u16,
     /// True while left mouse button is held down for drag selection.
     mouse_dragging: bool,
+    /// When set, tick() auto-scrolls the viewport in this direction and extends
+    /// the selection — triggered when dragging at or beyond viewport edges.
+    drag_auto_scroll: Option<DragAutoScroll>,
     /// Timestamp of last left-click in content area, for double/triple-click detection.
     last_click_time: Option<Instant>,
     /// Terminal position of last click, for multi-click detection.
     last_click_pos: (u16, u16),
     /// Click count (1=single, 2=double, 3=triple), resets on timeout or position change.
     click_count: u8,
+    /// True cursor position saved when wheel-scrolling moves it off-screen.
+    /// While set, tui-textarea's cursor sits at a dummy viewport-edge position
+    /// and its visual style is hidden.  Cleared on click or keystroke.
+    scroll_cursor: Option<(usize, usize)>,
+    /// Selection anchor saved when wheel-scrolling with an active selection.
+    /// Paired with `scroll_cursor` to reconstruct the full selection.
+    /// Cleared on click or keystroke.
+    scroll_anchor: Option<(usize, usize)>,
 
     // --- Wrap/reflow tracking ---
     /// Text width used for the last hard_wrap, so we can detect resize and reflow.
@@ -207,9 +225,12 @@ impl<'a> App<'a> {
             content_area: Rect::default(),
             editor_scroll_top: 0,
             mouse_dragging: false,
+            drag_auto_scroll: None,
             last_click_time: None,
             last_click_pos: (0, 0),
             click_count: 0,
+            scroll_cursor: None,
+            scroll_anchor: None,
             last_wrap_width: 0,
             gutter_handle,
             code_fence_regions,
@@ -236,6 +257,21 @@ impl<'a> App<'a> {
                 if let Some(handle) = self.gutter_handle.take() {
                     if let Ok(marks) = handle.join() {
                         self.gutter_marks = marks;
+                    }
+                }
+            }
+        }
+
+        // Timer-based drag auto-scroll: when the mouse is held at or beyond
+        // the viewport edge, keep scrolling and extending the selection each tick.
+        if self.mouse_dragging {
+            if let Some(direction) = self.drag_auto_scroll {
+                match direction {
+                    DragAutoScroll::Up => {
+                        self.textarea.move_cursor(CursorMove::Up);
+                    }
+                    DragAutoScroll::Down => {
+                        self.textarea.move_cursor(CursorMove::Down);
                     }
                 }
             }
