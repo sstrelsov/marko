@@ -21,4 +21,6 @@ install-updater = false
 tap = "sstrelsov/homebrew-tap"
 # Use .tar.gz for self_update compatibility
 unix-archive = ".tar.gz"
+# Allow manual edits to release.yml (for release-please compatibility)
+allow-dirty = ["ci"]
 publish-jobs = ["homebrew"]

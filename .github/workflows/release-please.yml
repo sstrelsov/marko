@@ -16,4 +16,3 @@ jobs:
       - uses: googleapis/release-please-action@v4
         with:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          skip-github-release: true
