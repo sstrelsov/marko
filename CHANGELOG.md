@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.3](https://github.com/sstrelsov/marko/compare/v0.1.2...v0.1.3) (2026-02-19)
+
+
+### Bug Fixes
+
+* handle existing release in cargo-dist workflow ([f48c05f](https://github.com/sstrelsov/marko/commit/f48c05faab906ebaa90c2c3bca70fd9b3b7020f7))
+* let cargo-dist own github release creation ([e6e9c9f](https://github.com/sstrelsov/marko/commit/e6e9c9f6a8cd10380d15aa96f821d3f4f4bf7f6c))
+
 ## [0.1.2](https://github.com/sstrelsov/marko/compare/v0.1.1...v0.1.2) (2026-02-18)
 
 
