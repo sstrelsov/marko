@@ -89,3 +89,11 @@ Creates the file if it doesn't exist.
 cargo run -- <file>
 cargo test
 ```
+
+## Releasing
+
+```bash
+cargo release patch --execute
+```
+
+Bumps the version in `Cargo.toml`, commits, tags, and pushes to `main`. Cargo-dist then automatically builds platform binaries, creates the GitHub Release, and updates the Homebrew tap. Replace `patch` with `minor` or `major` as needed.
