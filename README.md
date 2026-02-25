@@ -6,16 +6,11 @@ An open source terminal markdown editor written in Rust.
 
 ## Features
 
-- Dual-pane editor + live preview (Tab to
-  switch)
+- Dual-pane editor + live preview (Tab to switch)
 - Syntax highlighting for code blocks
-- Git integration (branch, file status,
-  diff gutter marks)
-- Mouse support (click, drag-select,
-  double/triple-click)
-- Smart markdown editing (list
-  continuation, bracket auto-close, table
-  formatting)
+- Git integration (branch, file status, diff gutter marks)
+- Mouse support (click, drag-select, double/triple-click)
+- Smart markdown editing (list continuation, bracket auto-close, table formatting)
 - System clipboard (copy/paste)
 - File rename (Ctrl+T)
 - Help overlay (F1)
@@ -31,9 +26,7 @@ brew install sstrelsov/tap/marko
 ### Shell installer (macOS / Linux)
 
 ```bash
-curl -fsSL
-https://github.com/sstrelsov/marko/releases/
-latest/download/marko-installer.sh | sh
+curl -fsSL https://github.com/sstrelsov/marko/releases/latest/download/marko-installer.sh | sh
 ```
 
 ### From source

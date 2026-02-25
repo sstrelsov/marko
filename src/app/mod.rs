@@ -25,6 +25,7 @@ use crate::markdown::autocomplete::{self, Continuation};
 use crate::markdown::code_highlight::{self, CodeFenceRegion};
 use crate::pandoc;
 use crate::theme;
+use crate::upgrade;
 
 /// State for round-trip .docx editing.
 pub struct DocxState {
@@ -134,6 +135,9 @@ pub struct App<'a> {
     // --- Background initialization ---
     gutter_handle: Option<JoinHandle<HashMap<usize, GutterMark>>>,
 
+    // --- Background update check ---
+    update_rx: Option<std::sync::mpsc::Receiver<String>>,
+
     // --- Syntax highlighting cache ---
     code_fence_regions: Vec<CodeFenceRegion>,
     /// Pre-computed highlight spans per region, per line: [region_idx][line_offset] -> spans.
@@ -226,6 +230,7 @@ impl<'a> App<'a> {
             scroll_anchor: None,
             wrap_state: None,
             gutter_handle,
+            update_rx: Some(upgrade::check_for_update_async()),
             code_fence_regions,
             code_fence_highlights: vec![],
             code_fence_dirty: true,
@@ -267,6 +272,16 @@ impl<'a> App<'a> {
                         self.textarea.move_cursor(CursorMove::Down);
                     }
                 }
+            }
+        }
+
+        // Poll background update check
+        if let Some(ref rx) = self.update_rx {
+            if let Ok(msg) = rx.try_recv() {
+                self.set_status(&msg);
+                // Use a longer display time so the user sees it
+                self.status_time = Some(Instant::now() + Duration::from_secs(7) - STATUS_DURATION);
+                self.update_rx = None;
             }
         }
 
