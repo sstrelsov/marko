@@ -1,9 +1,16 @@
 # Changelog
 
+## 0.1.7
+
+### Fixed
+- Fix self-update archive path after package rename to `marko-md`
+
 ## 0.1.6
 
 ### Added
 - Publish to crates.io as `marko-md` in CI release workflow
+- Changelog-based release notes
+- Pre-release changelog reminder in `make release`
 
 ### Changed
 - Renamed package from `marko` to `marko-md` for crates.io (binary still called `marko`)

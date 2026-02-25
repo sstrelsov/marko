@@ -10,7 +10,7 @@ pub fn run_upgrade() -> io::Result<()> {
         .repo_owner("sstrelsov")
         .repo_name("marko")
         .bin_name("marko")
-        .bin_path_in_archive("marko-{{ target }}/{{ bin }}")
+        .bin_path_in_archive("marko-md-{{ target }}/{{ bin }}")
         .show_download_progress(true)
         .current_version(cargo_crate_version!())
         .build()
