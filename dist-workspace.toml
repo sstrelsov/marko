@@ -19,6 +19,7 @@ hosting = "github"
 install-updater = false
 # Publish Homebrew formula to this tap repo
 tap = "sstrelsov/homebrew-tap"
+formula = "marko"
 # Use .tar.gz for self_update compatibility
 unix-archive = ".tar.gz"
 # Allow manual edits to release.yml (for release-please compatibility)

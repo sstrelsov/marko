@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.8
+
+### Fixed
+- Restore Homebrew formula name to `marko` after package rename
+
 ## 0.1.7
 
 ### Fixed
