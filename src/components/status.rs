@@ -13,6 +13,7 @@ pub struct StatusInfo<'a> {
     pub message: &'a str,
     pub word_count: usize,
     pub modified: bool,
+    pub update_available: bool,
 }
 
 pub fn render(frame: &mut Frame, area: Rect, info: StatusInfo) {
@@ -22,26 +23,28 @@ pub fn render(frame: &mut Frame, area: Rect, info: StatusInfo) {
 
     let chunks = Layout::horizontal([
         Constraint::Fill(1),
-        Constraint::Fill(2),
         Constraint::Fill(1),
     ])
     .split(area);
 
-    // Left: Ln/Col
-    let left = Paragraph::new(Line::from(Span::styled(
-        format!("  Ln {}, Col {}", info.line, info.col),
-        theme::status_style(),
-    )));
-    frame.render_widget(left, chunks[0]);
-
-    // Center: status message
+    // Left: message replaces Ln/Col while active, otherwise Ln/Col
     if !info.message.is_empty() {
-        let center = Paragraph::new(Line::from(Span::styled(
-            info.message.to_string(),
+        let style = if info.update_available {
+            theme::status_style().fg(theme::WARNING)
+        } else {
+            theme::status_style()
+        };
+        let left = Paragraph::new(Line::from(Span::styled(
+            format!("  {}", info.message),
+            style,
+        )));
+        frame.render_widget(left, chunks[0]);
+    } else {
+        let left = Paragraph::new(Line::from(Span::styled(
+            format!("  Ln {}, Col {}", info.line, info.col),
             theme::status_style(),
-        )))
-        .alignment(Alignment::Center);
-        frame.render_widget(center, chunks[1]);
+        )));
+        frame.render_widget(left, chunks[0]);
     }
 
     // Right: word count + save status
@@ -51,5 +54,5 @@ pub fn render(frame: &mut Frame, area: Rect, info: StatusInfo) {
         theme::status_style(),
     )))
     .alignment(Alignment::Right);
-    frame.render_widget(right, chunks[2]);
+    frame.render_widget(right, chunks[1]);
 }

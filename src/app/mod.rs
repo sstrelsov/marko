@@ -88,6 +88,10 @@ pub struct App<'a> {
     // --- Status bar ---
     pub status_message: String,
     pub status_time: Option<Instant>,
+    /// True when the status message is an update notification (renders orange).
+    update_available: bool,
+    /// Override for how long the current status message stays visible.
+    status_duration_override: Option<Duration>,
 
     // --- Git integration ---
     pub git_repo: Option<GitRepo>,
@@ -208,9 +212,10 @@ impl<'a> App<'a> {
             docx_state: None,
             preview: preview::PreviewState::new(),
             gutter_marks: HashMap::new(),
-            status_message: "F1: help | Tab: switch mode | Ctrl+S: save | Ctrl+Q: quit"
-                .to_string(),
-            status_time: Some(Instant::now()),
+            status_message: String::new(),
+            status_time: None,
+            update_available: false,
+            status_duration_override: None,
             git_repo,
             git_branch,
             git_file_status,
@@ -275,21 +280,25 @@ impl<'a> App<'a> {
             }
         }
 
-        // Poll background update check
-        if let Some(ref rx) = self.update_rx {
-            if let Ok(msg) = rx.try_recv() {
-                self.set_status(&msg);
-                // Use a longer display time so the user sees it
-                self.status_time = Some(Instant::now() + Duration::from_secs(7) - STATUS_DURATION);
-                self.update_rx = None;
+        // Auto-clear status messages after their duration
+        if let Some(time) = self.status_time {
+            let dur = self.status_duration_override.unwrap_or(STATUS_DURATION);
+            if time.elapsed() >= dur {
+                self.status_message.clear();
+                self.status_time = None;
+                self.status_duration_override = None;
+                self.update_available = false;
             }
         }
 
-        // Auto-clear status messages after STATUS_DURATION
-        if let Some(time) = self.status_time {
-            if time.elapsed() >= STATUS_DURATION {
-                self.status_message.clear();
-                self.status_time = None;
+        // Poll background update check (after clear so it can't be immediately wiped)
+        if let Some(ref rx) = self.update_rx {
+            if let Ok(msg) = rx.try_recv() {
+                self.status_message = msg;
+                self.update_available = true;
+                self.status_time = Some(Instant::now());
+                self.status_duration_override = Some(Duration::from_secs(10));
+                self.update_rx = None;
             }
         }
     }

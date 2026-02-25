@@ -231,6 +231,9 @@ fn editor_tilde_has_correct_color() {
 #[test]
 fn status_bar_shows_cursor_position() {
     let (mut app, _tmp) = app_with_content("hello");
+    // Clear the initial help message so Ln/Col is visible
+    app.status_message.clear();
+    app.status_time = None;
     let buf = render_app(&mut app, 80, 24);
     // Status bar is the last row
     let status = buffer_line_text(&buf, 23);
