@@ -25,6 +25,7 @@ use crate::markdown::autocomplete::{self, Continuation};
 use crate::markdown::code_highlight::{self, CodeFenceRegion};
 use crate::pandoc;
 use crate::theme;
+use crate::upgrade;
 
 /// State for round-trip .docx editing.
 pub struct DocxState {
@@ -87,6 +88,10 @@ pub struct App<'a> {
     // --- Status bar ---
     pub status_message: String,
     pub status_time: Option<Instant>,
+    /// True when the status message is an update notification (renders orange).
+    update_available: bool,
+    /// Override for how long the current status message stays visible.
+    status_duration_override: Option<Duration>,
 
     // --- Git integration ---
     pub git_repo: Option<GitRepo>,
@@ -133,6 +138,9 @@ pub struct App<'a> {
 
     // --- Background initialization ---
     gutter_handle: Option<JoinHandle<HashMap<usize, GutterMark>>>,
+
+    // --- Background update check ---
+    update_rx: Option<std::sync::mpsc::Receiver<String>>,
 
     // --- Syntax highlighting cache ---
     code_fence_regions: Vec<CodeFenceRegion>,
@@ -204,9 +212,10 @@ impl<'a> App<'a> {
             docx_state: None,
             preview: preview::PreviewState::new(),
             gutter_marks: HashMap::new(),
-            status_message: "F1: help | Tab: switch mode | Ctrl+S: save | Ctrl+Q: quit"
-                .to_string(),
-            status_time: Some(Instant::now()),
+            status_message: String::new(),
+            status_time: None,
+            update_available: false,
+            status_duration_override: None,
             git_repo,
             git_branch,
             git_file_status,
@@ -226,6 +235,7 @@ impl<'a> App<'a> {
             scroll_anchor: None,
             wrap_state: None,
             gutter_handle,
+            update_rx: Some(upgrade::check_for_update_async()),
             code_fence_regions,
             code_fence_highlights: vec![],
             code_fence_dirty: true,
@@ -270,11 +280,25 @@ impl<'a> App<'a> {
             }
         }
 
-        // Auto-clear status messages after STATUS_DURATION
+        // Auto-clear status messages after their duration
         if let Some(time) = self.status_time {
-            if time.elapsed() >= STATUS_DURATION {
+            let dur = self.status_duration_override.unwrap_or(STATUS_DURATION);
+            if time.elapsed() >= dur {
                 self.status_message.clear();
                 self.status_time = None;
+                self.status_duration_override = None;
+                self.update_available = false;
+            }
+        }
+
+        // Poll background update check (after clear so it can't be immediately wiped)
+        if let Some(ref rx) = self.update_rx {
+            if let Ok(msg) = rx.try_recv() {
+                self.status_message = msg;
+                self.update_available = true;
+                self.status_time = Some(Instant::now());
+                self.status_duration_override = Some(Duration::from_secs(10));
+                self.update_rx = None;
             }
         }
     }

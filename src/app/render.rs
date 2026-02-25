@@ -158,6 +158,7 @@ impl<'a> App<'a> {
                 message: &self.status_message,
                 word_count: self.word_count(),
                 modified: self.modified,
+                update_available: self.update_available,
             },
         );
 
@@ -173,7 +174,7 @@ impl<'a> App<'a> {
         let area = frame.area();
         // Size the modal to fit content, clamped to terminal size
         let width = 45u16.min(area.width.saturating_sub(4));
-        let height = 23u16.min(area.height.saturating_sub(2));
+        let height = 25u16.min(area.height.saturating_sub(2));
         let x = (area.width.saturating_sub(width)) / 2;
         let y = (area.height.saturating_sub(height)) / 2;
         let help_area = Rect::new(x, y, width, height);
@@ -183,6 +184,26 @@ impl<'a> App<'a> {
 
         // Help content -- must match the actual keybinding handlers!
         // Grouped: global, editor, tui-textarea built-ins, mouse
+        // Version + update line
+        let version = self_update::cargo_crate_version!();
+        let version_line = if self.update_available {
+            Line::from(vec![
+                Span::styled(
+                    format!("  marko v{version}  "),
+                    Style::default().fg(theme::LINE_NUMBER),
+                ),
+                Span::styled(
+                    "Update available — run `marko upgrade`",
+                    Style::default().fg(theme::WARNING),
+                ),
+            ])
+        } else {
+            Line::from(Span::styled(
+                format!("  marko v{version}"),
+                Style::default().fg(theme::LINE_NUMBER),
+            ))
+        };
+
         let help_text = vec![
             Line::from(Span::styled(
                 "Keybindings",
@@ -260,6 +281,8 @@ impl<'a> App<'a> {
                 Span::styled("  Click tabs       ", Style::default().fg(theme::LINK)),
                 Span::raw("Switch mode"),
             ]),
+            Line::from(""),
+            version_line,
         ];
 
         let block = Block::default()
