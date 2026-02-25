@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.6
+
+### Added
+- Publish to crates.io as `marko-md` in CI release workflow
+
+### Changed
+- Renamed package from `marko` to `marko-md` for crates.io (binary still called `marko`)
+- Local `make release` no longer attempts crates.io publish
+
+## 0.1.4
+
+### Added
+- Background update check and Makefile release targets
+
+### Changed
+- Replace hard-wrapping with visual soft-wrap
+
 ## [0.1.3](https://github.com/sstrelsov/marko/compare/v0.1.2...v0.1.3) (2026-02-19)
 
 
