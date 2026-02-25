@@ -4,13 +4,11 @@ This document tests every markdown feature for .docx round-trip fidelity.
 
 ## Inline Formatting
 
-Here is **bold text**, *italic text*, and ***bold italic*** together. You can also
-use __underscores for bold__ and _underscores for italic_
+Here is **bold text**, *italic text*, and ***bold italic*** together. You can also use __underscores for bold__ and _underscores for italic_
 
 ~~Strikethrough text~~ is supported too. And here's `inline code` in a sentence.
 
-==Highlighted text== should stand out. Here's ==multiple highlights== in ==one
-line==.
+==Highlighted text== should stand out. Here's ==multiple highlights== in ==one line==.
 
 Superscript: x^2^ and subscript: H~2~O.
 
@@ -213,28 +211,15 @@ Unicode: arrows → ← ↑ ↓, bullets • ◦ ▪, emoji 🦀 📝 ✅
 
 ## Paragraph Styles
 
-This is a normal paragraph with enough text to potentially trigger word wrapping in
-a narrow
-terminal. The quick brown fox jumps over the lazy dog. Pack my box with five dozen
-liquor jugs.
+This is a normal paragraph with enough text to potentially trigger word wrapping in a narrow terminal. The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs.
 
 Short paragraph.
 
-Another paragraph with **mixed** *formatting* and `code` and
-[links](https://example.com) all
-on ~~one line~~ to stress-test inline rendering.
+Another paragraph with **mixed** *formatting* and `code` and [links](https://example.com) all on ~~one line~~ to stress-test inline rendering.
 
 ## Summary
 
-This file exercises headings, inline formatting (bold, italic, strikethrough,
-highlight,
-code), links, images, all list types (unordered, ordered, task, nested),
-blockquotes (simple,
-nested, formatted), code blocks (multiple languages, plain), tables (simple,
-aligned, wide),
-horizontal rules, footnotes, definition lists, math, special characters, and
-paragraph
-wrapping.
+This file exercises headings, inline formatting (bold, italic, strikethrough, highlight, code), links, images, all list types (unordered, ordered, task, nested), blockquotes (simple, nested, formatted), code blocks (multiple languages, plain), tables (simple, aligned, wide), horizontal rules, footnotes, definition lists, math, special characters, and paragraph wrapping.
 
 Use it to test round-trip fidelity:
 
