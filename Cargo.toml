@@ -1,5 +1,5 @@
 [package]
-name = "marko"
+name = "marko-md"
 version = "0.1.5"
 edition = "2021"
 description = "A terminal markdown editor"
