@@ -23,7 +23,6 @@ use crate::components::{editor, header, preview, status};
 use crate::git::{self, diff::GutterMark, repo::GitRepo};
 use crate::markdown::autocomplete::{self, Continuation};
 use crate::markdown::code_highlight::{self, CodeFenceRegion};
-use crate::markdown::table_format;
 use crate::pandoc;
 use crate::theme;
 
@@ -72,10 +71,8 @@ pub struct App<'a> {
     pub file_path: PathBuf,
     pub textarea: TextArea<'a>,
     pub modified: bool,
-    /// Raw file content as loaded from disk (never wrapped by reflow).
+    /// Raw file content as loaded from disk.
     pub original_content: String,
-    /// `original_content` wrapped at `last_wrap_width`; used for modification detection.
-    wrapped_original: String,
     pub should_quit: bool,
 
     // --- Docx round-trip state ---
@@ -130,9 +127,9 @@ pub struct App<'a> {
     /// Cleared on click or keystroke.
     scroll_anchor: Option<(usize, usize)>,
 
-    // --- Wrap/reflow tracking ---
-    /// Text width used for the last hard_wrap, so we can detect resize and reflow.
-    last_wrap_width: usize,
+    // --- Visual wrap state ---
+    /// Cached visual-wrap mapping (recomputed when content or width changes).
+    pub(super) wrap_state: Option<wrap::WrapState>,
 
     // --- Background initialization ---
     gutter_handle: Option<JoinHandle<HashMap<usize, GutterMark>>>,
@@ -160,9 +157,6 @@ impl<'a> App<'a> {
     pub fn new(file_path: PathBuf) -> Self {
         let content = std::fs::read_to_string(&file_path).unwrap_or_default();
 
-        // Content is loaded raw here; wrapping to fit the terminal width
-        // is deferred to the first render() call where we have the actual
-        // content_area dimensions (last_wrap_width = 0 forces this).
         let lines: Vec<String> = if content.is_empty() {
             vec![String::new()]
         } else {
@@ -205,8 +199,7 @@ impl<'a> App<'a> {
             file_path,
             textarea,
             modified: false,
-            original_content: content.clone(),
-            wrapped_original: content,
+            original_content: content,
             should_quit: false,
             docx_state: None,
             preview: preview::PreviewState::new(),
@@ -231,7 +224,7 @@ impl<'a> App<'a> {
             click_count: 0,
             scroll_cursor: None,
             scroll_anchor: None,
-            last_wrap_width: 0,
+            wrap_state: None,
             gutter_handle,
             code_fence_regions,
             code_fence_highlights: vec![],
@@ -310,10 +303,9 @@ impl<'a> App<'a> {
             .sum()
     }
 
-    /// Recomputes the `modified` flag by comparing current content to the
-    /// wrapped original (original_content wrapped at last_wrap_width).
+    /// Recomputes the `modified` flag by comparing current content to the original.
     fn update_modified(&mut self) {
-        self.modified = self.textarea.lines().join("\n") != self.wrapped_original;
+        self.modified = self.textarea.lines().join("\n") != self.original_content;
         self.code_fence_dirty = true;
     }
 
@@ -353,64 +345,14 @@ impl<'a> App<'a> {
         self.status_time = Some(Instant::now());
     }
 
-    /// Computes the available text width from the current content_area and gutter.
-    pub(super) fn available_text_width(&self) -> usize {
+    /// Computes gutter width (line number column width) for the current content.
+    pub(super) fn gutter_width(&self) -> u16 {
         let total_lines = self.textarea.lines().len();
-        let gutter = if self.textarea.line_number_style().is_some() {
-            (total_lines as f64).log10() as usize + 1 + 2
+        if self.textarea.line_number_style().is_some() {
+            (total_lines as f64).log10() as u16 + 1 + 2
         } else {
             0
-        };
-        (self.content_area.width as usize).saturating_sub(gutter)
-    }
-
-    /// Re-wraps all editor content to `new_width`, preserving cursor position.
-    /// Uses the raw `original_content` as the wrap source when the user hasn't
-    /// made edits, so expanding the window can "unwrap" previously-wrapped lines.
-    pub(super) fn reflow_content(&mut self, new_width: usize) {
-        if new_width == 0 {
-            return;
         }
-
-        // Save cursor position
-        let (cursor_row, cursor_col) = self.textarea.cursor();
-
-        // When unmodified, re-wrap from the raw original so wider terminals
-        // can "unwrap" lines that were split for a narrower viewport.
-        // When the user has edits, best-effort re-wrap from current content.
-        let source = if self.modified {
-            self.textarea_content()
-        } else {
-            self.original_content.clone()
-        };
-        let wrapped = table_format::hard_wrap(&source, new_width);
-
-        let lines: Vec<String> = if wrapped.is_empty() {
-            vec![String::new()]
-        } else {
-            wrapped.lines().map(String::from).collect()
-        };
-
-        // Recreate textarea with wrapped content
-        let mut textarea = TextArea::new(lines);
-        editor::configure_textarea(&mut textarea);
-
-        self.textarea = textarea;
-
-        // Restore cursor position (clamped to new bounds)
-        let max_row = self.textarea.lines().len().saturating_sub(1);
-        let row = cursor_row.min(max_row);
-        let max_col = self.textarea.lines().get(row).map_or(0, |l| l.len());
-        let col = cursor_col.min(max_col);
-        self.textarea
-            .move_cursor(CursorMove::Jump(row as u16, col as u16));
-
-        // Update tracking state — keep original_content raw (never wrap it).
-        // Cache the wrapped version for modification detection.
-        self.wrapped_original = table_format::hard_wrap(&self.original_content, new_width);
-        self.last_wrap_width = new_width;
-        self.code_fence_dirty = true;
-        self.update_modified();
     }
 }
 
@@ -420,6 +362,7 @@ mod render;
 mod rename;
 mod save;
 mod selection;
+pub(crate) mod wrap;
 
 #[cfg(test)]
 mod tests;

@@ -401,16 +401,17 @@ fn gutter_marks_empty_for_non_git_file() {
     assert!(app.gutter_marks.is_empty());
 }
 
-// ─── Auto-Wrap Tests ─────────────────────────────────────────
+// ─── No-Wrap Tests ─────────────────────────────────────────
 
 #[test]
-fn navigation_keys_do_not_trigger_wrap() {
+fn navigation_keys_do_not_modify_buffer() {
     // Create a line longer than the viewport width
     let long_line = "a ".repeat(50); // 100 chars
     let (mut app, _tmp) = app_with_content(&long_line.trim());
     setup_viewport(&mut app, 40, 20);
     // Store line content before navigation
     let line_before = app.textarea.lines()[0].to_string();
+    let line_count_before = app.textarea.lines().len();
 
     // Press various navigation keys
     for code in &[
@@ -426,84 +427,55 @@ fn navigation_keys_do_not_trigger_wrap() {
         app.handle_event(key_event(*code));
     }
 
-    // Line should be unchanged — navigation must not trigger wrapping
+    // Line should be unchanged — navigation must not modify the buffer
     assert_eq!(
         app.textarea.lines()[0], line_before,
         "Navigation keys should not modify the line"
     );
+    assert_eq!(
+        app.textarea.lines().len(),
+        line_count_before,
+        "Navigation keys should not change line count"
+    );
 }
 
 #[test]
-fn typing_triggers_wrap() {
+fn typing_does_not_add_newlines() {
     let (mut app, _tmp) = app_with_content("hello world");
     setup_viewport(&mut app, 20, 20);
-    // Move to end and type enough to exceed viewport width
+    // Move to end and type text that would exceed viewport width
     app.handle_event(key_event(KeyCode::End));
     for ch in " this is extra text that overflows".chars() {
         app.handle_event(char_event(ch));
     }
-    // Should have wrapped into more than one line
-    assert!(
-        app.textarea.lines().len() > 1,
-        "Typing past viewport width should trigger auto-wrap"
+    // Should stay as one logical line — no hard wrapping
+    assert_eq!(
+        app.textarea.lines().len(),
+        1,
+        "Typing should not insert newlines (no hard wrapping)"
     );
 }
 
 #[test]
-fn first_render_wraps_long_lines() {
-    // Create a temp file with a very long line
-    let long_line = "word ".repeat(40); // 200 chars
-    let mut tmp = NamedTempFile::new().unwrap();
-    tmp.write_all(long_line.trim().as_bytes()).unwrap();
-    tmp.flush().unwrap();
-
-    let mut app = App::new(tmp.path().to_path_buf());
-    // Before first render, content is raw (unwrapped)
-    assert_eq!(app.textarea.lines().len(), 1);
-
-    // Simulate first render: set content_area and trigger reflow
-    setup_viewport(&mut app, 40, 20);
-    let text_width = app.available_text_width();
-    assert!(text_width > 0);
-    // last_wrap_width starts at 0, so reflow is triggered
-    app.reflow_content(text_width);
-
-    // Content should now be wrapped into multiple lines
-    assert!(
-        app.textarea.lines().len() > 1,
-        "Long lines should be hard-wrapped on first render reflow"
+fn save_preserves_raw_content() {
+    let content = "a long line that should not be wrapped when saved to disk regardless of width";
+    let (mut app, _tmp) = app_with_content(content);
+    setup_viewport(&mut app, 20, 20);
+    // Type something to mark as modified
+    app.handle_event(key_event(KeyCode::End));
+    app.handle_event(char_event('.'));
+    assert!(app.modified);
+    app.save();
+    // Read back saved content
+    let saved = std::fs::read_to_string(app.file_path.clone()).unwrap();
+    // Should be one line — no width-dependent wrapping
+    assert_eq!(
+        saved.lines().count(),
+        1,
+        "Saved content should not contain width-dependent newlines"
     );
-    // File should not be marked as modified
-    assert!(
-        !app.modified,
-        "Reflowed content should not mark file as modified"
-    );
-}
-
-#[test]
-fn reflow_to_wider_width_unwraps_lines() {
-    // Simulate: content wrapped at narrow width, then terminal expanded
-    let long_line = "word ".repeat(20); // 100 chars
-    let (mut app, _tmp) = app_with_content(long_line.trim());
-    // Wrap at narrow width first
-    setup_viewport(&mut app, 30, 20);
-    let narrow_width = app.available_text_width();
-    app.reflow_content(narrow_width);
-    let narrow_line_count = app.textarea.lines().len();
-    assert!(narrow_line_count > 1, "Should wrap at narrow width");
-
-    // Now expand to wider width
-    setup_viewport(&mut app, 80, 20);
-    let wide_width = app.available_text_width();
-    app.reflow_content(wide_width);
-    let wide_line_count = app.textarea.lines().len();
-    assert!(
-        wide_line_count < narrow_line_count,
-        "Expanding should unwrap lines: {} should be less than {}",
-        wide_line_count,
-        narrow_line_count
-    );
-    assert!(!app.modified, "Reflow should not mark file as modified");
+    assert!(saved.starts_with("a long line"));
+    assert!(saved.ends_with('.'));
 }
 
 // ─── Docx State Tests ──────────────────────────────────────────
@@ -886,4 +858,51 @@ fn scroll_during_drag_extends_selection_up() {
     app.handle_event(mouse_event(MouseEventKind::ScrollUp, 40, 10));
     assert!(app.textarea.cursor().0 < cursor_before, "scroll during drag should move cursor up");
     assert!(app.textarea.selection_range().is_some(), "selection should still be active");
+}
+
+// ─── Visual Cursor Navigation Tests ─────────────────────────────
+
+#[test]
+fn visual_cursor_up_down_within_wrapped_line() {
+    // Create a long line that wraps at width 20, set up wrap state, then
+    // verify Up/Down moves between visual rows within the same logical line.
+    let long_line = "the quick brown fox jumps over the lazy dog and more text here";
+    let (mut app, _tmp) = app_with_content(long_line);
+    setup_viewport(&mut app, 24, 20);
+    // Force wrap state computation
+    let text_width = (app.content_area.width as usize).saturating_sub(app.gutter_width() as usize);
+    app.wrap_state = Some(super::wrap::WrapState::compute(
+        &app.textarea.lines().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        text_width,
+    ));
+
+    // Cursor starts at (0, 0) — first visual row
+    assert_eq!(app.textarea.cursor(), (0, 0));
+
+    // Press Down — should stay on logical line 0, move to second visual row
+    app.handle_event(key_event(KeyCode::Down));
+    let (row, _col) = app.textarea.cursor();
+    assert_eq!(row, 0, "Down should stay on same logical line within wrapped content");
+
+    // Press Up — should go back to first visual row position
+    app.handle_event(key_event(KeyCode::Up));
+    assert_eq!(app.textarea.cursor().0, 0, "Up should stay on same logical line");
+}
+
+#[test]
+fn visual_cursor_navigates_across_logical_lines() {
+    let content = "short\nanother short";
+    let (mut app, _tmp) = app_with_content(content);
+    setup_viewport(&mut app, 80, 20);
+    let text_width = (app.content_area.width as usize).saturating_sub(app.gutter_width() as usize);
+    app.wrap_state = Some(super::wrap::WrapState::compute(
+        &app.textarea.lines().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        text_width,
+    ));
+
+    assert_eq!(app.textarea.cursor(), (0, 0));
+    app.handle_event(key_event(KeyCode::Down));
+    assert_eq!(app.textarea.cursor().0, 1, "Down should move to next logical line");
+    app.handle_event(key_event(KeyCode::Up));
+    assert_eq!(app.textarea.cursor().0, 0, "Up should move back to first line");
 }

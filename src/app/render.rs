@@ -1,6 +1,7 @@
-//! UI rendering: main frame layout, editor view with syntax highlighting,
+//! UI rendering: main frame layout, custom visual-wrap editor, syntax highlighting,
 //! preview delegation, and help modal overlay.
 
+use super::wrap::WrapState;
 use super::*;
 
 /// Pre-computes syntax highlighting for all code fence regions.
@@ -100,12 +101,6 @@ impl<'a> App<'a> {
 
         self.viewport_height = chunks[2].height;
         self.content_area = chunks[2];
-
-        // Reflow editor content if terminal width changed
-        let current_text_width = self.available_text_width();
-        if current_text_width > 0 && current_text_width != self.last_wrap_width {
-            self.reflow_content(current_text_width);
-        }
 
         // Header bar: filename (or rename input) + mode tabs
         // When editing a .docx, show the .docx filename instead of the .md sibling
@@ -280,65 +275,249 @@ impl<'a> App<'a> {
         frame.render_widget(paragraph, help_area);
     }
 
-    /// Renders the tui-textarea widget plus tilde markers for empty lines,
-    /// then overlays syntax highlighting for code fence regions.
-    fn render_editor(&mut self, frame: &mut Frame, area: Rect) {
-        frame.render_widget(&self.textarea, area);
-
-        // Track scroll position (mirrors tui-textarea's internal viewport logic)
-        // so we can translate mouse coordinates -> buffer positions correctly.
-        let cursor_row = self.textarea.cursor().0 as u16;
-        if cursor_row < self.editor_scroll_top {
-            self.editor_scroll_top = cursor_row;
-        } else if self.editor_scroll_top + area.height <= cursor_row {
-            self.editor_scroll_top = cursor_row + 1 - area.height;
+    /// Ensures the WrapState is up-to-date for the current content and width.
+    fn ensure_wrap_state(&mut self, text_width: usize) {
+        let needs_recompute = match &self.wrap_state {
+            None => true,
+            Some(ws) => ws.width != text_width,
+        };
+        if needs_recompute || self.code_fence_dirty {
+            let lines: Vec<String> = self.textarea.lines().iter().map(|s| s.to_string()).collect();
+            self.wrap_state = Some(WrapState::compute(&lines, text_width));
         }
+    }
 
-        // Render vim-style tilde markers for lines beyond the file content
-        let total_lines = self.textarea.lines().len();
-        let gutter_width = format!("{}", total_lines).len() as u16 + 1;
-        let visible_content_lines = (total_lines as u16).saturating_sub(self.editor_scroll_top);
-        if visible_content_lines < area.height {
-            for row in visible_content_lines..area.height {
-                let tilde_area = Rect {
-                    x: area.x,
-                    y: area.y + row,
-                    width: area.width,
-                    height: 1,
-                };
-                let tilde = Paragraph::new(Line::from(vec![
-                    Span::styled(
-                        " ".repeat(gutter_width as usize),
-                        Style::default().fg(theme::TILDE),
-                    ),
-                    Span::styled(
-                        "~",
-                        Style::default().fg(theme::TILDE),
-                    ),
-                ]));
-                frame.render_widget(tilde, tilde_area);
+    /// Custom visual-wrap editor renderer.
+    /// Reads from tui-textarea's buffer but renders with visual wrapping.
+    fn render_editor(&mut self, frame: &mut Frame, area: Rect) {
+        let lines: Vec<String> = self.textarea.lines().iter().map(|s| s.to_string()).collect();
+
+        // Compute gutter width from logical line count
+        let gutter_w = self.gutter_width();
+        let text_width = (area.width as usize).saturating_sub(gutter_w as usize);
+
+        // Recompute wrap state if needed
+        self.ensure_wrap_state(text_width);
+        let ws = self.wrap_state.as_ref().unwrap();
+
+        // Get cursor position (logical)
+        let (cursor_row, cursor_col) = self.textarea.cursor();
+        let cursor_visual_row = ws.visual_row_for_cursor(cursor_row, cursor_col);
+
+        // Ensure cursor is visible — but only when the user is NOT wheel-scrolling.
+        // When scroll_cursor is set, the user is scrolling the viewport independently
+        // of the cursor, so we must not snap back.
+        let vp_height = area.height as usize;
+
+        if self.scroll_cursor.is_none() {
+            let scroll_top = self.editor_scroll_top as usize;
+            if cursor_visual_row < scroll_top {
+                self.editor_scroll_top = cursor_visual_row as u16;
+            } else if cursor_visual_row >= scroll_top + vp_height {
+                self.editor_scroll_top = (cursor_visual_row + 1).saturating_sub(vp_height) as u16;
             }
         }
 
-        // Apply syntax highlighting overlay for code fence regions
-        self.apply_code_fence_highlighting(frame, area, gutter_width);
+        let scroll_top = self.editor_scroll_top as usize;
+        let total_visual = ws.total_visual_rows();
 
-        // Overlay git gutter markers on the first column of changed lines
-        if !self.gutter_marks.is_empty() {
-            let scroll_top = self.editor_scroll_top as usize;
-            let visible_rows = area.height.min(total_lines.saturating_sub(scroll_top) as u16);
-            for row in 0..visible_rows {
-                let buf_line = scroll_top + row as usize;
-                if let Some(mark) = self.gutter_marks.get(&buf_line) {
-                    let color = match mark {
-                        GutterMark::Added => theme::GIT_ADDED,
-                        GutterMark::Modified => theme::GIT_MODIFIED,
-                        GutterMark::Removed => theme::GIT_REMOVED,
+        // Get selection range for highlighting
+        let selection = self.textarea.selection_range();
+
+        // Fill background
+        let bg_style = theme::editor_style();
+        let bg = Paragraph::new("").style(bg_style);
+        frame.render_widget(bg, area);
+
+        // Render visible visual rows
+        let visible_count = vp_height.min(total_visual.saturating_sub(scroll_top));
+        let buf = frame.buffer_mut();
+
+        for screen_row in 0..visible_count {
+            let vr_idx = scroll_top + screen_row;
+            if vr_idx >= ws.rows.len() {
+                break;
+            }
+            let vr = &ws.rows[vr_idx];
+            let screen_y = area.y + screen_row as u16;
+
+            // ── Line number gutter ──
+            if gutter_w > 0 {
+                let num_str = if vr.is_first {
+                    format!("{}", vr.logical_line + 1)
+                } else {
+                    String::new()
+                };
+                // Right-align within gutter: " {num} "
+                // gutter_w includes 1 leading space + digits + 1 trailing space
+                let digit_width = (gutter_w - 2) as usize;
+                let padded = format!(" {:>width$} ", num_str, width = digit_width);
+                let ln_style = Style::default().fg(theme::LINE_NUMBER);
+                for (i, ch) in padded.chars().enumerate() {
+                    let x = area.x + i as u16;
+                    if x < area.x + area.width {
+                        if let Some(cell) = buf.cell_mut((x, screen_y)) {
+                            cell.set_char(ch);
+                            cell.set_style(ln_style);
+                        }
+                    }
+                }
+            }
+
+            // ── Text content ──
+            let text_x_start = area.x + gutter_w;
+            let line_text = &lines[vr.logical_line];
+            let slice = &line_text[vr.byte_start..vr.byte_end];
+
+            // Build the display string: continuation indent (visual only) + text
+            let display: String = if !vr.is_first {
+                format!("{}{}", vr.indent, slice)
+            } else {
+                slice.to_string()
+            };
+
+            let indent_chars = if vr.is_first { 0 } else { vr.indent.chars().count() };
+
+            // Determine if this row is on the cursor's logical line (for line highlight)
+            let is_cursor_line = vr.logical_line == cursor_row;
+
+            for (i, ch) in display.chars().enumerate() {
+                let x = text_x_start + i as u16;
+                if x >= area.x + area.width {
+                    break;
+                }
+                if let Some(cell) = buf.cell_mut((x, screen_y)) {
+                    cell.set_char(ch);
+
+                    // Determine logical char position for this cell
+                    let in_indent = i < indent_chars;
+                    let logical_char = if in_indent {
+                        None
+                    } else {
+                        Some(vr.char_start + (i - indent_chars))
                     };
-                    let buf = frame.buffer_mut();
-                    if let Some(cell) = buf.cell_mut((area.x, area.y + row)) {
-                        cell.set_char('\u{258E}'); // left quarter block
-                        cell.set_fg(color);
+
+                    // Check if this cell is in the selection
+                    let in_selection = if let Some(((sr, sc), (er, ec))) = selection {
+                        if let Some(lc) = logical_char {
+                            let pos = (vr.logical_line, lc);
+                            pos >= (sr, sc) && pos < (er, ec)
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+
+                    // Check if this is the cursor cell
+                    let is_cursor = is_cursor_line
+                        && self.scroll_cursor.is_none()
+                        && logical_char == Some(cursor_col);
+
+                    if is_cursor {
+                        cell.set_style(
+                            Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+                        );
+                    } else if in_selection {
+                        cell.set_style(Style::default().bg(theme::SELECTION));
+                    } else if is_cursor_line {
+                        // cursor line style (subtle highlight)
+                        cell.set_style(theme::cursor_line_style());
+                    }
+                }
+            }
+
+            // If cursor is at end of line (past last char), render cursor block
+            if is_cursor_line && self.scroll_cursor.is_none() {
+                let cursor_visual_col = ws.visual_col_for_cursor(cursor_row, cursor_col);
+                let cursor_x = text_x_start + cursor_visual_col as u16;
+                // Only render if cursor is past the last character we drew
+                let drawn_chars = display.chars().count();
+                if cursor_visual_col >= drawn_chars && cursor_x < area.x + area.width {
+                    if let Some(cell) = buf.cell_mut((cursor_x, screen_y)) {
+                        cell.set_char(' ');
+                        cell.set_style(
+                            Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+                        );
+                    }
+                }
+            }
+
+            // Fill remaining cells on cursor line with cursor_line_style
+            if is_cursor_line {
+                let filled = display.chars().count();
+                let cursor_vis_col = if is_cursor_line && self.scroll_cursor.is_none() {
+                    ws.visual_col_for_cursor(cursor_row, cursor_col)
+                } else {
+                    0
+                };
+                let fill_start = filled.max(if cursor_vis_col >= filled { cursor_vis_col + 1 } else { filled });
+                for i in fill_start..text_width {
+                    let x = text_x_start + i as u16;
+                    if x >= area.x + area.width {
+                        break;
+                    }
+                    if let Some(cell) = buf.cell_mut((x, screen_y)) {
+                        cell.set_style(theme::cursor_line_style());
+                    }
+                }
+            }
+        }
+
+        // ── Tilde markers for empty rows beyond content ──
+        if visible_count < vp_height {
+            for screen_row in visible_count..vp_height {
+                let screen_y = area.y + screen_row as u16;
+                // Gutter space
+                if gutter_w > 0 {
+                    let pad = " ".repeat(gutter_w as usize);
+                    for (i, ch) in pad.chars().enumerate() {
+                        let x = area.x + i as u16;
+                        if let Some(cell) = buf.cell_mut((x, screen_y)) {
+                            cell.set_char(ch);
+                            cell.set_style(Style::default().fg(theme::TILDE));
+                        }
+                    }
+                }
+                // Tilde
+                let tilde_x = area.x + gutter_w;
+                if tilde_x < area.x + area.width {
+                    if let Some(cell) = buf.cell_mut((tilde_x, screen_y)) {
+                        cell.set_char('~');
+                        cell.set_style(Style::default().fg(theme::TILDE));
+                    }
+                }
+            }
+        }
+
+        // ── Code fence syntax highlighting overlay ──
+        self.apply_code_fence_highlighting(frame, area, gutter_w);
+
+        // ── Git gutter markers ──
+        if !self.gutter_marks.is_empty() && self.wrap_state.is_some() {
+            let ws = self.wrap_state.as_ref().unwrap();
+            let scroll_top = self.editor_scroll_top as usize;
+            let visible_count = vp_height.min(ws.total_visual_rows().saturating_sub(scroll_top));
+            let buf = frame.buffer_mut();
+            for screen_row in 0..visible_count {
+                let vr_idx = scroll_top + screen_row;
+                if vr_idx >= ws.rows.len() {
+                    break;
+                }
+                let vr = &ws.rows[vr_idx];
+                // Only show gutter mark on first visual row of a logical line
+                if vr.is_first {
+                    if let Some(mark) = self.gutter_marks.get(&vr.logical_line) {
+                        let color = match mark {
+                            GutterMark::Added => theme::GIT_ADDED,
+                            GutterMark::Modified => theme::GIT_MODIFIED,
+                            GutterMark::Removed => theme::GIT_REMOVED,
+                        };
+                        let screen_y = area.y + screen_row as u16;
+                        if let Some(cell) = buf.cell_mut((area.x, screen_y)) {
+                            cell.set_char('\u{258E}'); // left quarter block
+                            cell.set_fg(color);
+                        }
                     }
                 }
             }
@@ -346,7 +525,7 @@ impl<'a> App<'a> {
     }
 
     /// Overlays syntax highlighting on the ratatui buffer for code fence regions.
-    /// Post-processes cells after tui-textarea has rendered, overwriting foreground
+    /// Post-processes cells after the custom renderer, overwriting foreground
     /// colors only (preserving cursor/selection backgrounds).
     fn apply_code_fence_highlighting(&mut self, frame: &mut Frame, area: Rect, gutter_width: u16) {
         // Refresh code fence regions and cached highlights if dirty
@@ -367,16 +546,16 @@ impl<'a> App<'a> {
             return;
         }
 
+        let ws = match &self.wrap_state {
+            Some(ws) => ws,
+            None => return,
+        };
+
         let scroll_top = self.editor_scroll_top as usize;
-        let visible_end = scroll_top + area.height as usize;
+        let vp_height = area.height as usize;
         let cursor_pos = self.textarea.cursor();
 
         for (region_idx, region) in self.code_fence_regions.iter().enumerate() {
-            // Skip regions completely outside the viewport
-            if region.end_line < scroll_top || region.start_line >= visible_end {
-                continue;
-            }
-
             let highlights = match self.code_fence_highlights.get(region_idx) {
                 Some(h) => h,
                 None => continue,
@@ -387,44 +566,57 @@ impl<'a> App<'a> {
             for (line_offset, spans) in highlights.iter().enumerate() {
                 let line_idx = content_start + line_offset;
 
-                // Only overlay visible lines
-                if line_idx < scroll_top || line_idx >= visible_end {
+                // Find visual rows for this logical line
+                if line_idx >= ws.line_starts.len() {
                     continue;
                 }
+                let vr_start = ws.line_starts[line_idx];
+                let vr_end = if line_idx + 1 < ws.line_starts.len() {
+                    ws.line_starts[line_idx + 1]
+                } else {
+                    ws.rows.len()
+                };
 
-                let screen_row = area.y + (line_idx - scroll_top) as u16;
-                if screen_row >= area.y + area.height {
-                    continue;
-                }
+                // For simplicity, apply highlight spans to the first visual row only
+                // (code fence content usually doesn't wrap much)
+                for vr_idx in vr_start..vr_end {
+                    if vr_idx < scroll_top || vr_idx >= scroll_top + vp_height {
+                        continue;
+                    }
+                    let vr = &ws.rows[vr_idx];
+                    let screen_row = area.y + (vr_idx - scroll_top) as u16;
+                    let text_start_x = area.x + gutter_width;
+                    let indent_chars = if vr.is_first { 0 } else { vr.indent.chars().count() };
 
-                // Map cached highlight spans onto buffer cells
-                let text_start_x = area.x + gutter_width + 1; // +1 for leading space in gutter
-                let mut col_offset: u16 = 0;
+                    let mut col_offset: u16 = indent_chars as u16;
+                    // Compute which portion of the highlight spans falls in this visual row
+                    let mut char_pos: usize = 0;
 
-                for (fg_color, text) in spans {
-                    for _ch in text.chars() {
-                        let cell_x = text_start_x + col_offset;
-                        if cell_x >= area.x + area.width {
-                            break;
-                        }
-
-                        // Skip cursor cell (preserve cursor visibility)
-                        let is_cursor_cell = line_idx == cursor_pos.0
-                            && col_offset as usize == cursor_pos.1;
-
-                        if !is_cursor_cell {
-                            let buf = frame.buffer_mut();
-                            if let Some(cell) = buf.cell_mut((cell_x, screen_row)) {
-                                // Only override foreground, preserve background
-                                // (keeps selection/cursor highlighting intact)
-                                let bg = cell.bg;
-                                if bg == ratatui::style::Color::Reset {
-                                    cell.set_fg(*fg_color);
+                    for (fg_color, text) in spans {
+                        for _ch in text.chars() {
+                            if char_pos >= vr.char_start && char_pos < vr.char_end {
+                                let cell_x = text_start_x + col_offset;
+                                if cell_x >= area.x + area.width {
+                                    break;
                                 }
-                            }
-                        }
 
-                        col_offset += 1;
+                                let logical_col = char_pos;
+                                let is_cursor_cell = line_idx == cursor_pos.0
+                                    && logical_col == cursor_pos.1;
+
+                                if !is_cursor_cell {
+                                    let buf = frame.buffer_mut();
+                                    if let Some(cell) = buf.cell_mut((cell_x, screen_row)) {
+                                        let bg = cell.bg;
+                                        if bg == ratatui::style::Color::Reset {
+                                            cell.set_fg(*fg_color);
+                                        }
+                                    }
+                                }
+                                col_offset += 1;
+                            }
+                            char_pos += 1;
+                        }
                     }
                 }
             }

@@ -1,5 +1,5 @@
 //! Input handling: keyboard events, mouse events, paste, auto-close pairs,
-//! list continuation, and auto-wrap.
+//! and list continuation.
 
 use super::*;
 
@@ -19,7 +19,6 @@ impl<'a> App<'a> {
         if self.mode == Mode::Editor {
             self.textarea.insert_str(text);
             self.update_modified();
-            self.auto_wrap_line();
         }
     }
 
@@ -140,7 +139,6 @@ impl<'a> App<'a> {
                 if let Some(text) = self.paste_from_clipboard() {
                     self.textarea.insert_str(text);
                     self.update_modified();
-                    self.auto_wrap_line();
                 } else if let Some(md_text) = self.paste_image_from_clipboard() {
                     self.textarea.insert_str(md_text);
                     self.update_modified();
@@ -165,6 +163,15 @@ impl<'a> App<'a> {
             (KeyModifiers::CONTROL, KeyCode::Char('d')) => {
                 self.textarea.delete_next_word();
                 self.update_modified();
+                return;
+            }
+            // Visual Up/Down: navigate visual rows (soft-wrapped lines)
+            (KeyModifiers::NONE, KeyCode::Up) => {
+                self.move_cursor_visual(true);
+                return;
+            }
+            (KeyModifiers::NONE, KeyCode::Down) => {
+                self.move_cursor_visual(false);
                 return;
             }
             // Enter: list/blockquote continuation
@@ -205,7 +212,6 @@ impl<'a> App<'a> {
 
         if !is_navigation {
             self.update_modified();
-            self.auto_wrap_line();
         }
     }
 
@@ -394,22 +400,25 @@ impl<'a> App<'a> {
     }
 
     /// Converts terminal mouse coordinates to buffer (row, col) positions,
-    /// accounting for the line number gutter width and scroll offset.
+    /// accounting for the line number gutter width, scroll offset, and visual wrapping.
     pub(super) fn mouse_to_buffer_pos(&self, column: u16, row: u16) -> (u16, u16) {
         let area = self.content_area;
-        let total_lines = self.textarea.lines().len();
-        // tui-textarea gutter = leading space + digits + trailing space
-        let gutter_width = if self.textarea.line_number_style().is_some() {
-            (total_lines as f64).log10() as u16 + 1 + 2
+        let gutter_width = self.gutter_width();
+        let relative_row = row.saturating_sub(area.y) as usize;
+        let visual_row = relative_row + self.editor_scroll_top as usize;
+        let relative_col = column.saturating_sub(area.x).saturating_sub(gutter_width) as usize;
+
+        if let Some(ref ws) = self.wrap_state {
+            let (logical_row, logical_col) = ws.logical_pos_for_visual(visual_row, relative_col);
+            let total_lines = self.textarea.lines().len();
+            let clamped_row = logical_row.min(total_lines.saturating_sub(1));
+            (clamped_row as u16, logical_col as u16)
         } else {
-            0
-        };
-        let relative_row = row.saturating_sub(area.y);
-        let buffer_row = (relative_row + self.editor_scroll_top)
-            .min(total_lines.saturating_sub(1) as u16);
-        let relative_col = column.saturating_sub(area.x);
-        let buffer_col = relative_col.saturating_sub(gutter_width);
-        (buffer_row, buffer_col)
+            // Fallback: no wrap state yet, treat as 1:1 mapping
+            let total_lines = self.textarea.lines().len();
+            let buffer_row = visual_row.min(total_lines.saturating_sub(1));
+            (buffer_row as u16, relative_col as u16)
+        }
     }
 
     // ─── Scroll helpers ──────────────────────────────────────────────────
@@ -428,39 +437,31 @@ impl<'a> App<'a> {
         self.scroll_anchor = None;
     }
 
-    /// Scrolls the editor viewport by one line without moving the cursor.
+    /// Scrolls the editor viewport by one visual row without moving the logical cursor.
     ///
-    /// tui-textarea's `scroll()` always clamps the cursor into the viewport
-    /// and its `render()` always snaps the viewport to show the cursor,
-    /// making it impossible to scroll the cursor off-screen through normal
-    /// APIs.
-    ///
-    /// We work around this by:
-    ///   1. Tracking the **true** cursor / selection-anchor in
-    ///      `scroll_cursor` / `scroll_anchor` across scroll events.
-    ///   2. After each scroll, if the true cursor is still visible we
-    ///      restore it; otherwise we park a **hidden** dummy cursor at the
-    ///      viewport edge so `render()` won't snap the viewport back.
-    ///   3. Selection highlight is re-established each scroll from the true
-    ///      endpoints, clamped to the viewport.
+    /// Since we now render our own editor (not tui-textarea's widget), we control
+    /// scrolling directly via `editor_scroll_top` which counts visual rows.
+    /// We still track the true cursor/selection in `scroll_cursor`/`scroll_anchor`
+    /// so the custom renderer can display them correctly.
     fn editor_scroll(&mut self, up: bool) -> bool {
+        // Compute max scroll using visual rows
+        let total_visual = self
+            .wrap_state
+            .as_ref()
+            .map(|ws| ws.total_visual_rows() as u16)
+            .unwrap_or_else(|| self.textarea.lines().len() as u16);
+        let max_scroll = total_visual.saturating_sub(self.viewport_height);
+
         // Bounds check
         if up {
             if self.editor_scroll_top == 0 {
                 return false;
             }
-        } else {
-            let total_lines = self.textarea.lines().len() as u16;
-            let max_scroll = total_lines.saturating_sub(self.viewport_height);
-            if self.editor_scroll_top >= max_scroll {
-                return false;
-            }
+        } else if self.editor_scroll_top >= max_scroll {
+            return false;
         }
 
         // ── 1. Determine the TRUE cursor and anchor ──────────────────
-        // On the first scroll, read from tui-textarea.  On subsequent
-        // scrolls the real positions live in our saved fields because
-        // tui-textarea's own cursor/selection have been overwritten.
         let true_cursor = self.scroll_cursor.unwrap_or_else(|| self.textarea.cursor());
 
         let true_anchor: Option<(usize, usize)> = self.scroll_anchor.or_else(|| {
@@ -473,37 +474,37 @@ impl<'a> App<'a> {
             })
         });
 
-        // ── 2. Cancel selection, scroll, update tracking ─────────────
+        // ── 2. Update scroll position ─────────────────────────────────
         self.textarea.cancel_selection();
-
-        let delta: i16 = if up { -1 } else { 1 };
-        self.textarea.scroll((delta, 0i16));
 
         if up {
             self.editor_scroll_top = self.editor_scroll_top.saturating_sub(1);
         } else {
-            let total_lines = self.textarea.lines().len() as u16;
-            let max_scroll = total_lines.saturating_sub(self.viewport_height);
             self.editor_scroll_top = (self.editor_scroll_top + 1).min(max_scroll);
         }
 
+        // Check if cursor's visual row is still in viewport
         let vp_top = self.editor_scroll_top as usize;
         let vp_bottom =
             (self.editor_scroll_top + self.viewport_height).saturating_sub(1) as usize;
 
-        let cursor_in_vp = true_cursor.0 >= vp_top && true_cursor.0 <= vp_bottom;
+        // Map the logical cursor to a visual row to check viewport visibility
+        let cursor_vr = self
+            .wrap_state
+            .as_ref()
+            .map(|ws| ws.visual_row_for_cursor(true_cursor.0, true_cursor.1))
+            .unwrap_or(true_cursor.0);
+
+        let cursor_in_vp = cursor_vr >= vp_top && cursor_vr <= vp_bottom;
 
         // ── 3. Restore cursor + selection ────────────────────────────
         if cursor_in_vp {
-            // True cursor is visible — put it back exactly where it was.
             self.textarea.move_cursor(CursorMove::Jump(
                 true_cursor.0 as u16,
                 true_cursor.1 as u16,
             ));
 
-            // Restore selection if any
             if let Some(anchor) = true_anchor {
-                // Place cursor at anchor first, start selection, jump back
                 self.textarea
                     .move_cursor(CursorMove::Jump(anchor.0 as u16, anchor.1 as u16));
                 self.textarea.start_selection();
@@ -513,7 +514,6 @@ impl<'a> App<'a> {
                 ));
             }
 
-            // Cursor is on-screen — make sure it's visible
             if self.scroll_cursor.is_some() {
                 self.textarea.set_cursor_style(
                     Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
@@ -522,24 +522,18 @@ impl<'a> App<'a> {
             self.scroll_cursor = None;
             self.scroll_anchor = None;
         } else {
-            // True cursor is off-screen — save it, park a dummy cursor
-            // at the viewport edge, and hide the cursor style.
             self.scroll_cursor = Some(true_cursor);
             if true_anchor.is_some() {
                 self.scroll_anchor = true_anchor;
             }
 
-            // Hide cursor so the dummy position isn't visible
             self.textarea.set_cursor_style(Style::default());
 
-            // Re-establish selection for the visible portion (if any)
             if let Some(anchor) = true_anchor {
                 let sel_top = anchor.0.min(true_cursor.0);
                 let sel_bottom = anchor.0.max(true_cursor.0);
 
                 if sel_top <= vp_bottom && sel_bottom >= vp_top {
-                    // Clamp both endpoints to viewport, but not beyond the
-                    // true selection range
                     let vis_start = anchor.0.clamp(vp_top, vp_bottom).clamp(sel_top, sel_bottom);
                     let vis_end = true_cursor
                         .0
@@ -554,15 +548,51 @@ impl<'a> App<'a> {
                         true_cursor.1 as u16,
                     ));
                 }
-                // No overlap → no visible selection, cursor stays wherever scroll() put it
             }
-            // No selection → cursor stays wherever scroll() put it (hidden)
         }
 
         true
     }
 
     // ─── Internal helpers ────────────────────────────────────────────────
+
+    /// Moves the cursor up or down by one visual row.
+    /// Within a wrapped logical line, this moves between visual rows.
+    /// At line boundaries, this moves to the adjacent logical line.
+    fn move_cursor_visual(&mut self, up: bool) {
+        let ws = match &self.wrap_state {
+            Some(ws) => ws,
+            None => {
+                // No wrap state — fall back to tui-textarea's movement
+                let input = Input::from(KeyEvent::new(
+                    if up { KeyCode::Up } else { KeyCode::Down },
+                    KeyModifiers::NONE,
+                ));
+                self.textarea.input(input);
+                return;
+            }
+        };
+
+        let (row, col) = self.textarea.cursor();
+        let cur_vr = ws.visual_row_for_cursor(row, col);
+        let cur_vis_col = ws.visual_col_for_cursor(row, col);
+
+        let target_vr = if up {
+            if cur_vr == 0 {
+                return; // at top
+            }
+            cur_vr - 1
+        } else {
+            if cur_vr + 1 >= ws.total_visual_rows() {
+                return; // at bottom
+            }
+            cur_vr + 1
+        };
+
+        let (new_row, new_col) = ws.logical_pos_for_visual(target_vr, cur_vis_col);
+        self.textarea
+            .move_cursor(CursorMove::Jump(new_row as u16, new_col as u16));
+    }
 
     /// Handles Enter key with list/blockquote continuation.
     /// Returns true if the key was handled (caller should not pass to tui-textarea).
@@ -634,73 +664,4 @@ impl<'a> App<'a> {
         true
     }
 
-    /// Auto-wraps the current line if it exceeds the visible text width.
-    /// Called after text insertions to enforce line-width limits while typing.
-    pub(super) fn auto_wrap_line(&mut self) {
-        // Safety limit to prevent infinite loops on very long pastes
-        for _ in 0..500 {
-            let (row, col) = self.textarea.cursor();
-            let lines = self.textarea.lines();
-            if row >= lines.len() {
-                break;
-            }
-            let line = lines[row].to_string();
-
-            // Compute visible text width (content area minus gutter)
-            let total_lines = lines.len();
-            let gutter: usize = if self.textarea.line_number_style().is_some() {
-                (total_lines as f64).log10() as usize + 1 + 2
-            } else {
-                0
-            };
-            let text_width = (self.content_area.width as usize).saturating_sub(gutter);
-            let line_chars: usize = line.chars().count();
-            if text_width == 0 || line_chars <= text_width {
-                break;
-            }
-
-            // Don't wrap table lines (tables are formatted separately on save)
-            let trimmed = line.trim_start();
-            if trimmed.starts_with('|') {
-                break;
-            }
-
-            // Find last space at or before the width limit (using char boundary)
-            let search_end: usize = line.char_indices()
-                .nth(text_width)
-                .map(|(i, _)| i)
-                .unwrap_or(line.len());
-            let break_pos = match line[..search_end].rfind(' ') {
-                Some(pos) if pos > 0 => pos,
-                _ => break, // no good break point -- leave as-is
-            };
-
-            // Determine continuation indent for the new line
-            let indent = table_format::continuation_indent(&line);
-
-            // Split the line: move to the space, delete it, insert newline + indent
-            self.textarea
-                .move_cursor(CursorMove::Jump(row as u16, break_pos as u16));
-            self.textarea.delete_next_char();
-            self.textarea.insert_newline();
-            if !indent.is_empty() {
-                self.textarea.insert_str(&indent);
-            }
-
-            // Restore cursor to the equivalent position on the new line
-            if col > break_pos {
-                let new_row = row + 1;
-                let new_col = indent.len() + (col - break_pos - 1);
-                let actual_len = self
-                    .textarea
-                    .lines()
-                    .get(new_row)
-                    .map_or(0, |l| l.len());
-                self.textarea.move_cursor(CursorMove::Jump(
-                    new_row as u16,
-                    new_col.min(actual_len) as u16,
-                ));
-            }
-        }
-    }
 }
